@@ -65,6 +65,10 @@ export const config = {
   watchMembers: list('WATCH_MEMBERS'),
   // 触发总结的命令名
   checkCommandName: opt('CHECK_COMMAND_NAME', 'check'),
+  // 只有这些 Discord 用户 ID 能使用 /check（留空 = 所有人可用，会在启动日志里警告）
+  allowedUserIds: list('ALLOWED_USER_IDS'),
+  // 机器人回复 / AI 总结使用的语言：Chinese（默认）或 English
+  summaryLanguage: opt('SUMMARY_LANGUAGE', 'Chinese'),
   timezone: opt('TIMEZONE', 'Asia/Shanghai'),
   // 消息保留天数，0 = 永久保留
   retentionDays: int('RETENTION_DAYS', 0),
@@ -78,6 +82,9 @@ if (config.trackChannelIds.length === 0) {
   );
 }
 
+/** 输出语言是否为英文 */
+export const isEnglish = !/^zh|chinese|中文/i.test(config.summaryLanguage);
+
 export function printConfigSummary() {
   const mask = (s) => (s && s.length > 8 ? `${s.slice(0, 4)}****${s.slice(-4)}` : '****');
   console.log('======== 运行配置 ========');
@@ -85,6 +92,10 @@ export function printConfigSummary() {
   console.log(`命令名        : /${config.checkCommandName}`);
   console.log(`AI 地址       : ${config.ai.baseUrl}`);
   console.log(`AI 模型       : ${config.ai.model}`);
+  console.log(`输出语言      : ${config.summaryLanguage}`);
+  console.log(
+    `命令使用者    : ${config.allowedUserIds.length ? config.allowedUserIds.join(', ') : '（未限制，所有人可用）'}`
+  );
   console.log(`关注成员      : ${config.watchMembers.length ? config.watchMembers.join(', ') : '（无，仅整体总结）'}`);
   console.log(`时区          : ${config.timezone}`);
   console.log(`消息保留      : ${config.retentionDays > 0 ? `${config.retentionDays} 天` : '永久'}`);
@@ -93,4 +104,12 @@ export function printConfigSummary() {
   console.log(`Discord Token : ${mask(config.discord.token)}`);
   console.log(`AI Key        : ${mask(config.ai.apiKey)}`);
   console.log('==========================');
+
+  if (config.allowedUserIds.length === 0) {
+    console.warn(
+      '⚠️  [安全提醒] 未设置 ALLOWED_USER_IDS，目前服务器里任何人都能使用 /check。\n' +
+        '    建议在 Render 的 Environment 里加上 ALLOWED_USER_IDS=<Juliet的用户ID>（多个用英文逗号分隔）。'
+    );
+  }
 }
+

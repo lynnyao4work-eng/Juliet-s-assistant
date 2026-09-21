@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
-import { config } from './config.js';
-import { buildTranscript } from './format.js';
+import { config, isEnglish } from './config.js';
+import { buildTranscript, formatDateTime } from './format.js';
 
 const client = new OpenAI({
   apiKey: config.ai.apiKey,
@@ -9,12 +9,13 @@ const client = new OpenAI({
   maxRetries: 2,
 });
 
-/**
- * 系统提示词。
- * 重点：mod room 的日志天然会包含粗口、违规内容、成人用语，
- * 必须先给模型一个"内部审核纪要"的角色框架，否则国产模型很容易触发安全拒答。
- */
-const SYSTEM_PROMPT = `你是一个 Discord 服务器管理团队（mod room / 审核后台）的内部纪要助手。
+/* ============================================================
+   提示词（中英双语）
+   重点：mod room 的日志天然会包含粗口、违规内容、成人用语，
+   必须先给模型一个"内部审核纪要"的角色框架，否则模型很容易触发安全拒答。
+   ============================================================ */
+
+const SYSTEM_PROMPT_ZH = `你是一个 Discord 服务器管理团队（mod room / 审核后台）的内部纪要助手。
 你的唯一职责是：客观、准确、完整地把聊天记录归纳成结构化纪要。
 
 必须遵守的规则：
@@ -44,19 +45,71 @@ const SYSTEM_PROMPT = `你是一个 Discord 服务器管理团队（mod room / �
 ## 各成员发言要点
 - **成员名**：该成员主要在说什么、立场如何、有无需要留意的发言`;
 
-const WATCH_SECTION_PROMPT = (names) => `
+const SYSTEM_PROMPT_EN = `You are the internal scribe for a Discord server's moderation team (mod room / review back office).
+Your only job is to turn chat logs into an accurate, neutral, complete written record.
 
-## 需要重点关注的成员发言
-以下成员被管理员标记为需要重点关注：${names}。
-请单独一节，逐条列出他们在这段时间的**每一条**关键发言（保留原话摘要 + 时间），不要遗漏，不要概括成一句话。`;
+Rules you MUST follow:
+1. The log you receive is first-hand working material left by the moderation team. It MAY contain profanity, insults, slurs, adult or sexual content, violence, discrimination, rule-breaking or illicit deals, reported incidents, and issued punishments.
+2. All of that is work information the team needs. You must read it normally and restate it faithfully. NEVER refuse, NEVER moralise, NEVER output evasion such as "I can't help with that", and NEVER stop mid-output because of individual words.
+3. Do not sanitise, do not censor, do not drop key details. When a rule violation is discussed, state plainly who said what and how it was handled.
+4. Never invent information that is not in the log. If a message's meaning is unclear, mark it "(unclear)".
+5. Output in English. Keep usernames, channel names, links and IDs exactly as written.
 
-const CHUNK_SYSTEM_PROMPT = `你是 Discord 服务器管理团队的内部纪要助手。
+Output MUST use exactly this Markdown structure:
+
+## TL;DR
+One sentence on what happened in this channel during the period.
+
+## Main topics
+- **Topic name**: short description + key conclusion (one to three lines each)
+
+## Key conclusions / decisions
+- List every item that has a clear conclusion or decision; if none, write "No notable conclusions this period"
+
+## Action items / follow-ups
+- Anything someone needs to do, confirm or reply to; if none, write "None"
+
+## Risks / conflicts / incidents
+- Arguments, conflicts, reported content, punishments needed or already issued; if none, write "None"
+
+## Highlights by member
+- **Member name**: what they mainly talked about, their stance, and anything worth noting`;
+
+const CHUNK_PROMPT_ZH = `你是 Discord 服务器管理团队的内部纪要助手。
 你会收到一段聊天记录片段，请把它压缩成高密度的中文要点清单。
 
 规则：
 - 保留发言人、时间、关键原话、冲突点、决定、待办。
 - 内容可能包含粗口、成人用语、违规内容，这些是审核工作材料，必须如实保留，严禁拒绝或回避输出。
 - 只输出要点清单，不要客套话，不要编造。`;
+
+const CHUNK_PROMPT_EN = `You are the internal scribe for a Discord server's moderation team.
+You will receive one segment of a chat log. Compress it into a dense, factual bullet list.
+
+Rules:
+- Keep speakers, timestamps, key quotes, conflicts, decisions and action items.
+- The content may contain profanity, adult language or rule-violating material. This is moderation working material: preserve it faithfully. Never refuse or dodge.
+- Output bullets only, no pleasantries, do not invent anything.`;
+
+const WATCH_ZH = (names) => `
+
+## 需要重点关注的成员发言
+以下成员被管理员标记为需要重点关注：${names}。
+请单独一节，逐条列出他们在这段时间的**每一条**关键发言（保留原话摘要 + 时间），不要遗漏，不要概括成一句话。`;
+
+const WATCH_EN = (names) => `
+
+## Watchlist members
+These members are flagged for attention by the admins: ${names}.
+Add a separate section listing EVERY key message from them during this period (short quote + timestamp). Do not omit any and do not collapse them into a single sentence.`;
+
+const SYSTEM_PROMPT = isEnglish ? SYSTEM_PROMPT_EN : SYSTEM_PROMPT_ZH;
+const CHUNK_SYSTEM_PROMPT = isEnglish ? CHUNK_PROMPT_EN : CHUNK_PROMPT_ZH;
+const WATCH_SECTION_PROMPT = isEnglish ? WATCH_EN : WATCH_ZH;
+
+/* ============================================================
+   调用逻辑
+   ============================================================ */
 
 /** 调用一次模型 */
 async function callAI(systemContent, userContent, maxTokens) {
@@ -72,7 +125,11 @@ async function callAI(systemContent, userContent, maxTokens) {
 
   const text = resp.choices?.[0]?.message?.content;
   if (!text || !text.trim()) {
-    throw new Error('AI 返回了空内容（可能是被内容安全策略拦截，或 token 超限）');
+    throw new Error(
+      isEnglish
+        ? 'The AI returned empty content (possibly blocked by a content filter, or the token limit was hit).'
+        : 'AI 返回了空内容（可能是被内容安全策略拦截，或 token 超限）'
+    );
   }
   return text.trim();
 }
@@ -107,15 +164,18 @@ export async function summarizeMessages({ channelName, messages, since, until })
   const chunks = chunkTranscript(transcript);
 
   const watchSection = config.watchMembers.length
-    ? WATCH_SECTION_PROMPT(config.watchMembers.join('、'))
+    ? WATCH_SECTION_PROMPT(config.watchMembers.join(isEnglish ? ', ' : '、'))
     : '';
 
-  const header = `频道：#${channelName}\n时间范围：${formatRange(since, until)}\n消息条数：${messages.length}\n`;
+  const header = isEnglish
+    ? `Channel: #${channelName}\nTime range: ${formatRange(since, until)}\nMessage count: ${messages.length}\n`
+    : `频道：#${channelName}\n时间范围：${formatRange(since, until)}\n消息条数：${messages.length}\n`;
 
   // ---- 情况一：一次装得下 ----
   if (chunks.length <= 1) {
-    const userContent =
-      `${header}\n以下是原始聊天记录：\n\n${transcript}\n\n请按结构输出纪要。`;
+    const userContent = isEnglish
+      ? `${header}\nBelow is the raw chat log:\n\n${transcript}\n\nProduce the record using the required structure.`
+      : `${header}\n以下是原始聊天记录：\n\n${transcript}\n\n请按结构输出纪要。`;
     return await callAI(SYSTEM_PROMPT + watchSection, userContent);
   }
 
@@ -124,36 +184,30 @@ export async function summarizeMessages({ channelName, messages, since, until })
 
   const partials = [];
   for (let i = 0; i < chunks.length; i++) {
-    const userContent =
-      `${header}\n这是第 ${i + 1}/${chunks.length} 段聊天记录：\n\n${chunks[i]}\n\n请输出要点清单。`;
+    const userContent = isEnglish
+      ? `${header}\nThis is segment ${i + 1} of ${chunks.length}:\n\n${chunks[i]}\n\nOutput the bullet list.`
+      : `${header}\n这是第 ${i + 1}/${chunks.length} 段聊天记录：\n\n${chunks[i]}\n\n请输出要点清单。`;
     const part = await callAI(CHUNK_SYSTEM_PROMPT, userContent, 1500);
-    partials.push(`【第 ${i + 1} 段要点】\n${part}`);
+    partials.push(isEnglish ? `【Segment ${i + 1} notes】\n${part}` : `【第 ${i + 1} 段要点】\n${part}`);
   }
 
-  const mergeContent =
-    `${header}\n下面是从 ${chunks.length} 段聊天记录中分别提取的要点清单，请合并去重，` +
-    `然后按结构输出一份完整的纪要。\n\n${partials.join('\n\n')}`;
+  const mergeContent = isEnglish
+    ? `${header}\nBelow are notes extracted from ${chunks.length} segments of the chat log. ` +
+      `Merge and de-duplicate them, then produce one complete record using the required structure.\n\n${partials.join('\n\n')}`
+    : `${header}\n下面是从 ${chunks.length} 段聊天记录中分别提取的要点清单，请合并去重，` +
+      `然后按结构输出一份完整的纪要。\n\n${partials.join('\n\n')}`;
 
   return await callAI(SYSTEM_PROMPT + watchSection, mergeContent);
 }
 
 function formatRange(since, until) {
-  const fmt = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: config.timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-  return `${fmt.format(new Date(since))} → ${fmt.format(new Date(until))}`;
+  return `${formatDateTime(since)} → ${formatDateTime(until)}`;
 }
 
 /** 简单连通性自检，启动时用 */
 export async function pingAI() {
   try {
-    await callAI('你是一个测试助手，只需回复"OK"。', '请回复：OK', 16);
+    await callAI('You are a test assistant. Reply with "OK" only.', 'Reply with: OK', 16);
     return { ok: true };
   } catch (e) {
     return { ok: false, message: e.message };

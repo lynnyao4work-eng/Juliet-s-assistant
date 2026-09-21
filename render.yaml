@@ -47,6 +47,11 @@ services:
         value: ""
       - key: CHECK_COMMAND_NAME
         value: check
+      # 允许使用 /check 的用户 ID（必填，多个用英文逗号分隔）
+      - key: ALLOWED_USER_IDS
+        sync: false
+      - key: SUMMARY_LANGUAGE
+        value: Chinese
       - key: TIMEZONE
         value: Asia/Shanghai
       - key: RETENTION_DAYS

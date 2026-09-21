@@ -58,7 +58,7 @@ export async function getMessagesBetween(channelId, sinceIso, untilIso, maxMessa
     const to = from + pageSize - 1;
     const { data, error } = await supabase
       .from('messages')
-      .select('created_at, author_id, author_name, author_display_name, content, attachments, reply_to_id')
+      .select('created_at, channel_id, channel_name, author_id, author_name, author_display_name, content, attachments, reply_to_id')
       .eq('channel_id', channelId)
       .gt('created_at', sinceIso)
       .lte('created_at', untilIso)

@@ -16,10 +16,11 @@
 7. [第四步：把代码传上 GitHub](#第四步把代码传上-github)
 8. [第五步：在 Render 部署](#第五步在-render-部署)
 9. [第六步：配置保活监控](#第六步配置保活监控)
-10. [怎么用](#怎么用)
-11. [环境变量速查表](#环境变量速查表)
-12. [以后怎么改（加频道 / 加关注成员 / 改命令名）](#以后怎么改)
-13. [出问题了怎么办](#出问题了怎么办)
+10. [第七步：限制只有指定的人能使用 /check](#第七步限制只有指定的人能使用-check)
+11. [怎么用](#怎么用)
+12. [环境变量速查表](#环境变量速查表)
+13. [以后怎么改（加频道 / 加关注成员 / 改命令名）](#以后怎么改)
+14. [出问题了怎么办](#出问题了怎么办)
 
 ---
 
@@ -35,9 +36,9 @@
 
 ```
 📋 #mod-room · 消息总结
-统计区间：2026/09/20 15:51 → 2026/09/21 10:46（18 小时 55 分钟）
-消息总数：123 条 · 参与成员：5 人
-发言排行：alice(45)、bob(30)、carol(28)…
+**统计区间**：2026/09/20 15:51 → 2026/09/21 10:46（18 小时 55 分钟）
+**消息总数**：123 条 · **参与成员**：5 人
+**发言排行**：alice(45)、bob(30)、carol(28)…
 ────────────────────
 
 ## 一句话总览
@@ -58,6 +59,10 @@
 ## 各成员发言要点
 - **alice**：……
 ```
+
+> 上面是默认的中文输出（`SUMMARY_LANGUAGE=Chinese`）。把 `SUMMARY_LANGUAGE` 改成 `English`，
+> 机器人外壳仍为中文，但 AI 总结正文会变成英文（小节标题变为 `## TL;DR` 等）。
+> 这条回复通过 **Discord 私信 (DM) 发给你**，mod room 里只剩一行 `✅ 已通过私信发送。` 的小提示，其他人看不到任何内容。
 
 下一次 `/check` 会自动从**上一次的结束时间**继续，不会重复总结。
 
@@ -216,6 +221,7 @@ git push -u origin main
 | `AI_API_KEY` | DeepSeek 的 `sk-xxxx` |
 | `SUPABASE_URL` | `https://lkgkqaqhxitpkemekgre.supabase.co` |
 | `SUPABASE_SERVICE_KEY` | Supabase 的 service_role key |
+| `ALLOWED_USER_IDS` | 允许使用 `/check` 的用户 ID（如 Juliet 的 ID），多个用英文逗号分隔 |
 
 4. 点 **Apply** / **Create Resources**，等待构建完成（大约 2–5 分钟）。
 
@@ -238,6 +244,8 @@ git push -u origin main
 | `AI_BASE_URL` | `https://api.deepseek.com` |
 | `AI_MODEL` | `deepseek-chat` |
 | `TRACK_CHANNEL_IDS` | `1419607085821333634` |
+| `ALLOWED_USER_IDS` | Juliet 的用户 ID（见下方「限制只有指定的人能用」） |
+| `SUMMARY_LANGUAGE` | `English` |
 | `TIMEZONE` | `Asia/Shanghai` |
 | `RETENTION_DAYS` | `90` |
 | `MAX_SUMMARY_MESSAGES` | `3000` |
@@ -286,6 +294,57 @@ Monitor Type 选 `HTTP(s)`，URL 填 `.../health`，Interval 选 5 minutes。
 
 ---
 
+## 第七步：限制只有指定的人能使用 `/check`
+
+限制分两层，**两层都做才最稳**。
+
+### 第 1 层（代码层，强制生效）：`ALLOWED_USER_IDS` 白名单
+
+只要这个变量不是空的，就只有名单里的用户能触发命令；其他人即使打了命令，
+也只会收到一条「You are not authorised」的私密提示（别人看不到），同时在 Render 日志里留下记录。
+
+**怎么拿某个人的用户 ID：**
+
+1. Discord 客户端 → 左下角齿轮（用户设置）→ **高级（Advanced）** → 打开 **开发者模式（Developer Mode）**
+2. 回到服务器成员列表，**右键**目标用户 → **复制用户 ID（Copy User ID）**
+3. 得到一串 18~19 位数字，例如 `234567890123456789`
+
+**填到哪里：**
+
+- Render 控制台 → 你的服务 → **Environment** → **Add Environment Variable**
+- Key：`ALLOWED_USER_IDS`，Value：用户 ID（多个用英文逗号分隔，**不要加空格和引号**）
+- 保存后 Render 会自动重新部署
+
+> 启动日志里会打印一行 `命令使用者 : 234567890123456789`，可以据此确认有没有生效。
+> 如果留空，日志会打印一条黄色警告「未设置 ALLOWED_USER_IDS」——说明此时所有人都能用。
+
+### 第 2 层（界面层，让命令对别人不可见）
+
+Discord 本身支持按成员/角色控制命令是否**显示**在命令列表里，这一步在 Discord 客户端里做，不需要改代码：
+
+1. 服务器名称 → 右键 → **服务器设置（Server Settings）**
+2. 左侧找 **整合 / Integrations（Integrations）** → 找到你的 bot → 点 **管理（Manage）**
+3. 找到 `/check` 命令 → 展开权限设置
+4. 先给 **@everyone** 设为 **❌ 拒绝**，再单独添加目标成员（Juliet）设为 **✅ 允许**
+5. 保存
+
+这样普通成员在输入 `/` 时**根本看不到**这条命令；而 Juliet 能正常看到并使用。
+
+> ⚠️ 注意：Discord 的命令权限只支持按「成员 / 角色 / 频道」来设，没有「代码里写死某个用户 ID 就自动隐藏」这种接口。
+> 所以「看不见」靠第 2 层（界面设置），「用不了」靠第 1 层（代码白名单）——两者互相兜底。
+
+### 关于语言
+
+按需求，**命令名称、参数说明、机器人所有回复** 都是英文。
+AI 生成的总结内容语言由 `SUMMARY_LANGUAGE` 控制：
+
+| 值 | 效果 |
+|---|---|
+| `English`（默认） | 总结正文也用英文 |
+| `Chinese` | 总结正文用中文（命令界面仍然是英文） |
+
+---
+
 ## 怎么用
 
 在**任意频道**（通常就是 mod room）输入：
@@ -293,6 +352,14 @@ Monitor Type 选 `HTTP(s)`，URL 填 `.../health`，Interval 选 5 minutes。
 ```
 /check
 ```
+
+**总结结果会自动通过 Discord 私信（DM）发给你**，不在频道里留下任何消息。
+频道里只会显示一条只有你自己看得到的小提示：「✅ Summary sent to your DMs.」
+
+如果你的 DMs 是关闭的（很少见），会自动回退为频道内私密回复，不会丢失内容。
+
+> ⚠️ 必须先在 Discord 设置里允许服务器的 bot 给你发 DM，否则收不到总结。
+> 测试方法：随便发一条消息给 bot，如果能送达就说明 DMs 正常。
 
 ### 可选参数
 
@@ -305,6 +372,17 @@ Monitor Type 选 `HTTP(s)`，URL 填 `.../health`，Interval 选 5 minutes。
 
 > 建议：日常用 `/check`；想只看某个时间段用 `/check hours:12`；
 > AI 总结出问题时用 `/check raw:True` 看原始记录。
+
+### 其余命令一览
+
+| 命令 | 用途 | 典型场景 |
+|---|---|---|
+| `/status` | 查看机器人运行状态（在线时长、保存消息数、最近错误、AI 配置） | "bot 还活着吗？" |
+| `/lookup <user> [hours] [limit]` | 查某成员最近 N 小时的所有发言 | "昨天 22 点 Alice 到底说了什么" |
+| `/search <keyword> [hours] [limit]` | 按关键词搜索最近消息（内容 + 用户名） | "上次讨论 NSFW 政策是什么时候" |
+| `/recent [hours] [limit]` | 查看最近 N 条原始消息（不带 AI 总结） | AI 抽风时看实时情况 |
+
+**所有命令的输出都通过 DM 发给你**，频道里不留任何痕迹。命令都受同一份 `ALLOWED_USER_IDS` 白名单控制。
 
 ### 关于「上次 check 之后」的边界
 
@@ -330,6 +408,8 @@ Monitor Type 选 `HTTP(s)`，URL 填 `.../health`，Interval 选 5 minutes。
 | `TRACK_CHANNEL_IDS` | ✅ | — | 监控频道 ID，逗号分隔 |
 | `WATCH_MEMBERS` | ⬜ | 空 | 重点关注成员，逗号分隔，填了会多输出一节 |
 | `CHECK_COMMAND_NAME` | ⬜ | `check` | 命令名，改成 `sum` 就是 `/sum` |
+| `ALLOWED_USER_IDS` | ⬜ | 空 | 允许使用 `/check` 的用户 ID，逗号分隔。**留空 = 所有人都能用** |
+| `SUMMARY_LANGUAGE` | ⬜ | `Chinese` | 机器人回复与 AI 总结的语言：`Chinese` / `English` |
 | `TIMEZONE` | ⬜ | `Asia/Shanghai` | 影响日志里显示的时间 |
 | `RETENTION_DAYS` | ⬜ | `0` | 消息保留天数，`0`=永久，建议 `90` |
 | `MAX_SUMMARY_MESSAGES` | ⬜ | `3000` | 单次总结读取上限 |
@@ -413,6 +493,24 @@ npm run selftest
 ### ❌ `/check` 提示「不在监控列表中」
 `TRACK_CHANNEL_IDS` 里没有这个频道。要么加进去，要么用 `/check channel:#频道名`。
 如果监控列表只有 1 个频道，机器人会自动用它。
+
+### ❌ 提示 `You are not authorised to use this command`
+
+说明有权限白名单，而当前用户不在名单里。这是**正常行为**。日志里会有 `[权限拦截]` 记录。
+如果这是你自己，检查 Render 的 `ALLOWED_USER_IDS` 是否填对了你的用户 ID（纯数字、无空格）。
+
+### ❌ 输入 `/` 时看不到 `/check` 命令
+
+1. 如果给 @everyone 设了拒绝，其他人本来就看不到 —— 这是预期效果。
+2. 如果连你也看不到：打开 **服务器设置 → 整合 / Integrations → 你的 bot → 管理**，确认你自己的账号没有被一并拒绝。
+3. 命令还没注册成功：确认 Render 日志里有 `[命令注册] /check 已注册到服务器 xxxxx`。
+   刚把机器人邀请进服务器时，代码会自动注册；如果没看到，去 Render 点一次 **Restart service**。
+
+### ❌ 收不到 DM 总结
+1. 检查 Discord 隐私设置：**用户设置 → 隐私与安全 → 允许来自服务器成员的私信**（要打开）。
+2. 测试 DM 是否通：随便打开跟 bot 的私信，发条消息。如果发不出去说明被屏蔽。
+3. 如果 DMs 关闭，机器人会自动**回退为频道内私密回复**——内容不会丢，只是不在 DM 里。
+4. Render 日志里搜 `[DM 失败]` 可以看到具体原因。
 
 ### ❌ 总结里完全没有内容，或者报 AI 错误
 1. 先执行 `/check raw:True`，看数据库里到底有没有消息。

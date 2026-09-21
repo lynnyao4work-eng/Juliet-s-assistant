@@ -11,7 +11,7 @@ import {
   MessageFlags,
 } from 'discord.js';
 
-import { config, printConfigSummary } from './config.js';
+import { config, isEnglish, printConfigSummary } from './config.js';
 import {
   upsertMessages,
   getNewestMessageTime,
@@ -36,7 +36,7 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message],
 });
 
-/* 运行状态，供 /status 健康检查使用 */
+/* 运行状态，供 /status / HTTP 健康检查使用 */
 const state = {
   startedAt: Date.now(),
   lastMessageAt: null,
@@ -123,40 +123,33 @@ async function backfillChannel(channelId) {
   console.log(`[补齐] 频道 ${channelId} 完成：扫描 ${scanned} 条，新增 ${saved} 条`);
 }
 
-/** 注册斜杠命令到命令所在的所有服务器（按服务器注册，秒级生效） */
-async function registerCommands() {
-  const rest = new REST({ version: '10' }).setToken(config.discord.token);
+/* ============================================================
+   命令定义
+   ============================================================ */
 
-  const command = new SlashCommandBuilder()
-    .setName(config.checkCommandName)
-    .setDescription('总结本频道自上次 check 以来的新消息')
-    .addIntegerOption((o) =>
-      o
-        .setName('hours')
-        .setDescription('可选：改为总结最近 N 小时的消息（默认从上次 check 之后开始）')
-        .setMinValue(1)
-        .setMaxValue(720)
-    )
-    .addIntegerOption((o) =>
-      o
-        .setName('limit')
-        .setDescription(`可选：最多总结多少条消息（默认 ${config.maxSummaryMessages}）`)
-        .setMinValue(50)
-        .setMaxValue(10000)
-    )
-    .addBooleanOption((o) =>
-      o.setName('raw').setDescription('可选：只导出原始消息列表，不做 AI 总结（调试用）')
-    )
-    .addChannelOption((o) =>
-      o
-        .setName('channel')
-        .setDescription('可选：指定要总结的频道（默认当前频道）')
-        .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+/** 把所有命令注册到指定服务器（按服务器注册，秒级生效） */
+async function registerCommandsForGuild(guildId) {
+  try {
+    const rest = new REST({ version: '10' }).setToken(config.discord.token);
+    await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
+      body: [
+        buildCheckCommand().toJSON(),
+        buildStatusCommand().toJSON(),
+        buildLookupCommand().toJSON(),
+        buildSearchCommand().toJSON(),
+        buildRecentCommand().toJSON(),
+      ],
+    });
+    console.log(
+      `[命令注册] 已注册到服务器 ${guildId}：/${config.checkCommandName}, /status, /lookup, /search, /recent`
     );
+  } catch (e) {
+    console.error(`[命令注册] 服务器 ${guildId} 失败：${e.message}`);
+  }
+}
 
-  const body = [command.toJSON()];
-
-  // 通过被监控频道反查它所属的服务器
+/** 启动时：通过被监控频道反查它所属的服务器，逐个注册 */
+async function registerCommands() {
   const guildIds = new Set();
   for (const id of config.trackChannelIds) {
     try {
@@ -167,26 +160,208 @@ async function registerCommands() {
     }
   }
 
+  for (const guild of client.guilds.cache.values()) guildIds.add(guild.id);
+
   if (guildIds.size === 0) {
-    console.warn('[命令注册] 没有解析到任何服务器，/check 可能无法使用');
+    console.warn('[命令注册] 没有解析到任何服务器，命令可能无法使用（机器人尚未加入服务器？）');
     return;
   }
 
-  for (const guildId of guildIds) {
+  for (const guildId of guildIds) await registerCommandsForGuild(guildId);
+}
+
+/* ============================================================
+   权限校验 + 投递工具
+   ============================================================ */
+
+function isAllowedUser(interaction) {
+  if (config.allowedUserIds.length === 0) return true;
+  return config.allowedUserIds.includes(interaction.user.id);
+}
+
+/** 权限校验 + deferReply，失败直接回复一条拒绝后返回 false */
+async function guardAndDefer(interaction) {
+  if (!isAllowedUser(interaction)) {
+    console.warn(
+      `[权限拦截] 未授权用户尝试使用 /${interaction.commandName}：` +
+        `${interaction.user.username}（ID ${interaction.user.id}）`
+    );
+    const denyText = isEnglish
+      ? '⛔ **You are not authorised to use this command.**\n' +
+        'This command is restricted to specific users. If you believe this is a mistake, contact the server owner.'
+      : '⛔ 你没有使用此命令的权限。\n此命令仅对指定用户开放。如果你认为这是误判，请联系服务器所有者。';
+    await interaction.reply({ content: denyText, flags: MessageFlags.Ephemeral });
+    return false;
+  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  return true;
+}
+
+/** 通过 DM 投递；DMs 关闭则退回频道内 ephemeral 多段消息 */
+async function deliverDmOrFallback(interaction, content) {
+  try {
+    const chunks = splitMessage(content);
+    for (const c of chunks) {
+      await interaction.user.send({ content: c });
+    }
+    const ack = isEnglish ? '✅ Summary sent to your DMs.' : '✅ 已通过私信发送。';
+    await interaction.editReply({ content: ack, flags: MessageFlags.Ephemeral });
+    return { via: 'dm' };
+  } catch (e) {
+    console.warn(
+      `[DM 失败] ${interaction.user.username}（${interaction.user.id}）：${e.message} → 退回频道内私密回复`
+    );
+    const chunks = splitMessage(content);
+    await interaction.editReply({ content: chunks[0], flags: MessageFlags.Ephemeral });
+    for (const c of chunks.slice(1)) {
+      await interaction.followUp({ content: c, flags: MessageFlags.Ephemeral });
+    }
+    return { via: 'channel-fallback' };
+  }
+}
+
+/** 把频道 ID 解析成 "频道名" 字符串（fetch 失败就退回 ID） */
+async function resolveChannelName(channelId) {
+  try {
+    const ch = await client.channels.fetch(channelId);
+    return ch?.name ?? channelId;
+  } catch {
+    return channelId;
+  }
+}
+
+/** 在所有被监控频道里取一段时间的消息，平铺到一个数组 */
+async function fetchAllTracked(sinceIso, untilIso, perChannelLimit) {
+  const out = [];
+  for (const id of config.trackChannelIds) {
     try {
-      await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), { body });
-      console.log(`[命令注册] /${config.checkCommandName} 已注册到服务器 ${guildId}`);
+      const rows = await getMessagesBetween(id, sinceIso, untilIso, perChannelLimit);
+      out.push(...rows);
     } catch (e) {
-      console.error(`[命令注册] 服务器 ${guildId} 失败：${e.message}`);
+      console.warn(`[查询] 频道 ${id}：${e.message}`);
     }
   }
+  return out;
+}
+
+/* ============================================================
+   各命令的 SlashCommandBuilder
+   ============================================================ */
+
+function buildCheckCommand() {
+  const c = new SlashCommandBuilder()
+    .setName(config.checkCommandName)
+    .addIntegerOption((o) =>
+      o.setName('hours').setMinValue(1).setMaxValue(720)
+    )
+    .addIntegerOption((o) =>
+      o.setName('limit').setMinValue(50).setMaxValue(10000)
+    )
+    .addBooleanOption((o) => o.setName('raw'))
+    .addChannelOption((o) =>
+      o.setName('channel').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+    );
+  if (isEnglish) {
+    c.setDescription('Summarise new messages in this channel since the last check');
+    for (const o of c.options) {
+      if (o.name === 'hours') o.setDescription('Optional: summarise the last N hours instead of since the last check');
+      else if (o.name === 'limit') o.setDescription(`Optional: max messages to summarise (default ${config.maxSummaryMessages})`);
+      else if (o.name === 'raw') o.setDescription('Optional: dump the raw message list without AI summary (debug)');
+      else if (o.name === 'channel') o.setDescription('Optional: target channel (defaults to the current one)');
+    }
+  } else {
+    c.setDescription('总结本频道自上次 check 以来的新消息');
+    for (const o of c.options) {
+      if (o.name === 'hours') o.setDescription('可选：改为总结最近 N 小时（默认从上次的 check 开始）');
+      else if (o.name === 'limit') o.setDescription(`可选：最多总结多少条消息（默认 ${config.maxSummaryMessages}）`);
+      else if (o.name === 'raw') o.setDescription('可选：只导出原始消息列表，不做 AI 总结（调试用）');
+      else if (o.name === 'channel') o.setDescription('可选：指定要总结的频道（默认当前频道）');
+    }
+  }
+  return c;
+}
+
+function buildStatusCommand() {
+  const c = new SlashCommandBuilder().setName('status');
+  if (isEnglish) c.setDescription('Show the bot running state, last error, and AI config');
+  else c.setDescription('查看机器人运行状态（在线时长、消息数、最近错误、AI 配置）');
+  return c;
+}
+
+function buildLookupCommand() {
+  const c = new SlashCommandBuilder()
+    .setName('lookup')
+    .addUserOption((o) => o.setName('user').setRequired(true))
+    .addIntegerOption((o) => o.setName('hours').setMinValue(1).setMaxValue(720))
+    .addIntegerOption((o) => o.setName('limit').setMinValue(1).setMaxValue(500));
+  if (isEnglish) {
+    c.setDescription('Find every message from a specific member in the last N hours');
+    for (const o of c.options) {
+      if (o.name === 'user') o.setDescription('the member to look up');
+      else if (o.name === 'hours') o.setDescription('how far back to look, in hours (default 24)');
+      else if (o.name === 'limit') o.setDescription('max messages to return (default 50)');
+    }
+  } else {
+    c.setDescription('查找某个成员最近 N 小时的所有发言');
+    for (const o of c.options) {
+      if (o.name === 'user') o.setDescription('要查询的成员');
+      else if (o.name === 'hours') o.setDescription('查询最近多少小时（默认 24）');
+      else if (o.name === 'limit') o.setDescription('最多返回多少条（默认 50）');
+    }
+  }
+  return c;
+}
+
+function buildSearchCommand() {
+  const c = new SlashCommandBuilder()
+    .setName('search')
+    .addStringOption((o) => o.setName('keyword').setRequired(true).setMinLength(1).setMaxLength(100))
+    .addIntegerOption((o) => o.setName('hours').setMinValue(1).setMaxValue(720))
+    .addIntegerOption((o) => o.setName('limit').setMinValue(1).setMaxValue(200));
+  if (isEnglish) {
+    c.setDescription('Search recent messages by keyword (content + usernames)');
+    for (const o of c.options) {
+      if (o.name === 'keyword') o.setDescription('keyword to search (case-insensitive)');
+      else if (o.name === 'hours') o.setDescription('how far back to look, in hours (default 24)');
+      else if (o.name === 'limit') o.setDescription('max matches to return (default 50)');
+    }
+  } else {
+    c.setDescription('按关键词搜索最近 N 小时的消息（内容 + 用户名）');
+    for (const o of c.options) {
+      if (o.name === 'keyword') o.setDescription('要搜索的关键词（不区分大小写）');
+      else if (o.name === 'hours') o.setDescription('搜索最近多少小时（默认 24）');
+      else if (o.name === 'limit') o.setDescription('最多返回多少条（默认 50）');
+    }
+  }
+  return c;
+}
+
+function buildRecentCommand() {
+  const c = new SlashCommandBuilder()
+    .setName('recent')
+    .addIntegerOption((o) => o.setName('hours').setMinValue(1).setMaxValue(720))
+    .addIntegerOption((o) => o.setName('limit').setMinValue(1).setMaxValue(500));
+  if (isEnglish) {
+    c.setDescription('Show the most recent raw messages (no AI summary)');
+    for (const o of c.options) {
+      if (o.name === 'hours') o.setDescription('how far back to look, in hours (default 6)');
+      else if (o.name === 'limit') o.setDescription('max messages to return (default 30)');
+    }
+  } else {
+    c.setDescription('查看最近 N 条原始消息（不做 AI 总结）');
+    for (const o of c.options) {
+      if (o.name === 'hours') o.setDescription('查看最近多少小时（默认 6）');
+      else if (o.name === 'limit') o.setDescription('最多返回多少条（默认 30）');
+    }
+  }
+  return c;
 }
 
 /* ============================================================
    /check 主逻辑
    ============================================================ */
 async function handleCheck(interaction) {
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  if (!(await guardAndDefer(interaction))) return;
 
   // 1. 决定要总结哪个频道
   const picked = interaction.options.getChannel('channel');
@@ -196,18 +371,19 @@ async function handleCheck(interaction) {
     if (config.trackChannelIds.length === 1) {
       channelId = config.trackChannelIds[0];
     } else {
-      await interaction.editReply({
-        content:
-          `❌ 频道 <#${channelId}> 不在监控列表中。\n` +
+      const text = isEnglish
+        ? `❌ Channel <#${channelId}> is not in the tracked list.\n` +
+          `Currently tracked: ${config.trackChannelIds.map((id) => `<#${id}>`).join(', ')}\n` +
+          'Use the `channel` option to pick one, or add that channel to the tracked list.'
+        : `❌ 频道 <#${channelId}> 不在监控列表中。\n` +
           `当前监控：${config.trackChannelIds.map((id) => `<#${id}>`).join('、')}\n` +
-          `请用 \`channel\` 参数指定，或把该频道加入监控列表。`,
-      });
+          '请用 `channel` 参数指定，或把该频道加入监控列表。';
+      await interaction.editReply({ content: text });
       return;
     }
   }
 
-  const channel = await client.channels.fetch(channelId).catch(() => null);
-  const channelName = channel?.name ?? channelId;
+  const channelName = await resolveChannelName(channelId);
 
   // 2. 计算时间区间
   const until = new Date();
@@ -219,15 +395,15 @@ async function handleCheck(interaction) {
   let sinceSource;
   if (hours) {
     since = new Date(until.getTime() - hours * 3600 * 1000);
-    sinceSource = `最近 ${hours} 小时`;
+    sinceSource = isEnglish ? `last ${hours} hour(s)` : `最近 ${hours} 小时`;
   } else {
     const last = await getLastCheckTime(channelId);
     if (last) {
       since = last;
-      sinceSource = '上次 check 之后';
+      sinceSource = isEnglish ? 'since the last check' : '上次 check 之后';
     } else {
       since = new Date(until.getTime() - 24 * 3600 * 1000);
-      sinceSource = '首次使用，默认最近 24 小时';
+      sinceSource = isEnglish ? 'first run, defaulted to the last 24 hours' : '首次使用，默认最近 24 小时';
     }
   }
 
@@ -235,9 +411,12 @@ async function handleCheck(interaction) {
   const messages = await getMessagesBetween(channelId, since.toISOString(), until.toISOString(), limit);
 
   if (messages.length === 0) {
-    await interaction.editReply({
-      content: `📭 **#${channelName}** 在 ${formatDateTime(since)} 之后没有新消息（${sinceSource}）。`,
-    });
+    await deliverDmOrFallback(
+      interaction,
+      isEnglish
+        ? `📭 No new messages in **#${channelName}** after ${formatDateTime(since)} (${sinceSource}).`
+        : `📭 **#${channelName}** 在 ${formatDateTime(since)} 之后没有新消息（${sinceSource}）。`
+    );
     return;
   }
 
@@ -245,17 +424,14 @@ async function handleCheck(interaction) {
   const rangeText = `${formatDateTime(since)} → ${formatDateTime(until)}`;
   const durationText = humanDuration(until.getTime() - since.getTime());
 
-  // 4a. 调试模式：只要原始列表
+  // 4a. 调试模式：只发原始列表（DM 给用户）
   if (rawMode) {
-    const header =
-      `📋 **#${channelName} · 原始消息**\n` +
-      `区间：${rangeText}（${durationText}）\n` +
-      `共 ${messages.length} 条 · ${authors.length} 人发言\n\n`;
-    const chunks = splitMessage(header + buildTranscript(messages));
-    await interaction.editReply({ content: chunks[0] });
-    for (const c of chunks.slice(1)) {
-      await interaction.followUp({ content: c, flags: MessageFlags.Ephemeral });
-    }
+    const text = isEnglish
+      ? `📋 **#${channelName} · raw messages**\nRange: ${rangeText} (${durationText})\n${messages.length} messages · ${authors.length} participants\n\n` +
+        buildTranscript(messages)
+      : `📋 **#${channelName} · 原始消息**\n区间：${rangeText}（${durationText}）\n共 ${messages.length} 条 · ${authors.length} 人发言\n\n` +
+        buildTranscript(messages);
+    await deliverDmOrFallback(interaction, text);
     return;
   }
 
@@ -266,30 +442,32 @@ async function handleCheck(interaction) {
   } catch (e) {
     state.lastError = `${new Date().toISOString()} ${e.message}`;
     console.error('[summarize] 失败：', e);
-    await interaction.editReply({
-      content:
-        `⚠️ **AI 总结失败**：${e.message}\n\n` +
-        `下面是原始消息（可用 \`/check raw:True\` 复现此效果）：\n\n` +
-        splitMessage(buildTranscript(messages), 1700)[0],
-    });
+    const fallbackText = isEnglish
+      ? `⚠️ **AI summary failed**: ${e.message}\n\nBelow is the raw log (you can reproduce with \`/${config.checkCommandName} raw:True\`):\n\n` +
+        buildTranscript(messages)
+      : `⚠️ **AI 总结失败**：${e.message}\n\n下面是原始消息（可用 \`/${config.checkCommandName} raw:True\` 复现）：\n\n` +
+        buildTranscript(messages);
+    await deliverDmOrFallback(interaction, fallbackText);
     return;
   }
 
-  const header =
-    `📋 **#${channelName} · 消息总结**\n` +
-    `**统计区间**：${rangeText}（${durationText}）\n` +
-    `**消息总数**：${messages.length} 条 · **参与成员**：${authors.length} 人\n` +
-    `**发言排行**：${authors.slice(0, 10).map(([n, c]) => `${n}(${c})`).join('、')}\n` +
-    `**数据来源**：${sinceSource}\n` +
-    `────────────────────\n\n`;
+  const summaryText = isEnglish
+    ? `📋 **#${channelName} · summary**\n` +
+      `**Range**: ${rangeText} (${durationText})\n` +
+      `**Messages**: ${messages.length} · **Participants**: ${authors.length}\n` +
+      `**Top posters**: ${authors.slice(0, 10).map(([n, c]) => `${n}(${c})`).join(', ')}\n` +
+      `**Window**: ${sinceSource}\n` +
+      `────────────────────\n\n` +
+      aiText
+    : `📋 **#${channelName} · 消息总结**\n` +
+      `**统计区间**：${rangeText}（${durationText}）\n` +
+      `**消息总数**：${messages.length} 条 · **参与成员**：${authors.length} 人\n` +
+      `**发言排行**：${authors.slice(0, 10).map(([n, c]) => `${n}(${c})`).join('、')}\n` +
+      `**数据来源**：${sinceSource}\n` +
+      `────────────────────\n\n` +
+      aiText;
+  const result = await deliverDmOrFallback(interaction, summaryText);
 
-  const chunks = splitMessage(header + aiText);
-  await interaction.editReply({ content: chunks[0] });
-  for (const c of chunks.slice(1)) {
-    await interaction.followUp({ content: c, flags: MessageFlags.Ephemeral });
-  }
-
-  // 5. 记录本次 check，作为下次的起点
   await saveCheckRecord({
     channel_id: channelId,
     period_start: since.toISOString(),
@@ -301,8 +479,170 @@ async function handleCheck(interaction) {
   });
 
   console.log(
-    `[check] ${interaction.user.username} 在 #${channelName} 触发总结：${messages.length} 条消息，${chunks.length} 段输出`
+    `[check] ${interaction.user.username} 在 #${channelName} 触发总结：${messages.length} 条消息，投递方式=${result.via}`
   );
+}
+
+/* ============================================================
+   /status：机器人运行状态
+   ============================================================ */
+async function handleStatus(interaction) {
+  if (!(await guardAndDefer(interaction))) return;
+
+  const uptime = humanDuration(process.uptime() * 1000);
+  const lastMsg = state.lastMessageAt ? formatDateTime(state.lastMessageAt) : (isEnglish ? '(none)' : '（无）');
+  const lastErr = state.lastError ?? (isEnglish ? '(none)' : '（无）');
+  const channelsText = config.trackChannelIds.map((id) => `<#${id}>`).join(isEnglish ? ', ' : '、');
+
+  const text = isEnglish
+    ? `📊 **Bot status**\n` +
+      `**Uptime**: ${uptime}\n` +
+      `**Messages saved this run**: ${state.savedCount}\n` +
+      `**Last message at**: ${lastMsg}\n` +
+      `**Last error**: ${lastErr}\n` +
+      `**AI**: ${config.ai.baseUrl} / ${config.ai.model}\n` +
+      `**Tracked channels**: ${channelsText}\n` +
+      `**Output language**: ${config.summaryLanguage}\n` +
+      `**Authorised users**: ${config.allowedUserIds.join(', ') || '(none — everyone allowed!)'}`
+    : `📊 **运行状态**\n` +
+      `**在线时长**：${uptime}\n` +
+      `**本次保存消息**：${state.savedCount} 条\n` +
+      `**最后一条消息**：${lastMsg}\n` +
+      `**最后一次错误**：${lastErr}\n` +
+      `**AI**：${config.ai.baseUrl} / ${config.ai.model}\n` +
+      `**监控频道**：${channelsText}\n` +
+      `**输出语言**：${config.summaryLanguage}\n` +
+      `**授权用户**：${config.allowedUserIds.join(', ') || '（无——任何人都能用！）'}`;
+
+  await deliverDmOrFallback(interaction, text);
+}
+
+/* ============================================================
+   /lookup <user> [hours] [limit]
+   ============================================================ */
+async function handleLookup(interaction) {
+  if (!(await guardAndDefer(interaction))) return;
+
+  const user = interaction.options.getUser('user');
+  const hours = interaction.options.getInteger('hours') ?? 24;
+  const limit = interaction.options.getInteger('limit') ?? 50;
+
+  const until = new Date();
+  const since = new Date(until.getTime() - hours * 3600 * 1000);
+  const rangeText = `${formatDateTime(since)} → ${formatDateTime(until)}`;
+  const durText = humanDuration(hours * 3600 * 1000);
+
+  // 在所有监控频道里查；取一个比 limit 大几倍的上限再在内存里筛
+  const rows = await fetchAllTracked(since.toISOString(), until.toISOString(), limit * 5);
+  const matched = rows
+    .filter((m) => m.author_id === user.id)
+    .slice(0, limit);
+
+  if (matched.length === 0) {
+    await deliverDmOrFallback(
+      interaction,
+      isEnglish
+        ? `🔍 No messages from **${user.username}** in the last ${hours}h across tracked channels.`
+        : `🔍 **${user.username}** 在最近 ${hours} 小时内的监控频道里没有发言。`
+    );
+    return;
+  }
+
+  // 频道名字（第一条所在频道就行）
+  const firstChannelId = matched[0].channel_id;
+  const channelName = matched[0].channel_name || (await resolveChannelName(firstChannelId));
+
+  const text = isEnglish
+    ? `🔍 **#${channelName} · messages by ${user.username}**\nRange: ${rangeText} (${durText})\n${matched.length} messages\n\n` +
+      buildTranscript(matched)
+    : `🔍 **#${channelName} · ${user.username} 的发言**\n区间：${rangeText}（${durText}）\n共 ${matched.length} 条\n\n` +
+      buildTranscript(matched);
+  await deliverDmOrFallback(interaction, text);
+}
+
+/* ============================================================
+   /search <keyword> [hours] [limit]
+   ============================================================ */
+async function handleSearch(interaction) {
+  if (!(await guardAndDefer(interaction))) return;
+
+  const keyword = interaction.options.getString('keyword');
+  const hours = interaction.options.getInteger('hours') ?? 24;
+  const limit = interaction.options.getInteger('limit') ?? 50;
+
+  const until = new Date();
+  const since = new Date(until.getTime() - hours * 3600 * 1000);
+  const rangeText = `${formatDateTime(since)} → ${formatDateTime(until)}`;
+  const durText = humanDuration(hours * 3600 * 1000);
+
+  const rows = await fetchAllTracked(since.toISOString(), until.toISOString(), limit * 5);
+  const lcKw = keyword.toLowerCase();
+  const matched = rows
+    .filter(
+      (m) =>
+        (m.content ?? '').toLowerCase().includes(lcKw) ||
+        (m.author_name ?? '').toLowerCase().includes(lcKw) ||
+        (m.author_display_name ?? '').toLowerCase().includes(lcKw)
+    )
+    .slice(0, limit);
+
+  if (matched.length === 0) {
+    await deliverDmOrFallback(
+      interaction,
+      isEnglish
+        ? `🔍 No matches for "${keyword}" in the last ${hours}h.`
+        : `🔍 在最近 ${hours} 小时内没找到包含「${keyword}」的消息。`
+    );
+    return;
+  }
+
+  const firstChannelId = matched[0].channel_id;
+  const channelName = matched[0].channel_name || (await resolveChannelName(firstChannelId));
+
+  const text = isEnglish
+    ? `🔍 **#${channelName} · search "${keyword}"**\nRange: ${rangeText} (${durText})\n${matched.length} matches\n\n` +
+      buildTranscript(matched)
+    : `🔍 **#${channelName} · 搜索 "${keyword}"**\n区间：${rangeText}（${durText}）\n匹配 ${matched.length} 条\n\n` +
+      buildTranscript(matched);
+  await deliverDmOrFallback(interaction, text);
+}
+
+/* ============================================================
+   /recent [hours] [limit]
+   ============================================================ */
+async function handleRecent(interaction) {
+  if (!(await guardAndDefer(interaction))) return;
+
+  const hours = interaction.options.getInteger('hours') ?? 6;
+  const limit = interaction.options.getInteger('limit') ?? 30;
+
+  const until = new Date();
+  const since = new Date(until.getTime() - hours * 3600 * 1000);
+  const rangeText = `${formatDateTime(since)} → ${formatDateTime(until)}`;
+  const durText = humanDuration(hours * 3600 * 1000);
+
+  const rows = await fetchAllTracked(since.toISOString(), until.toISOString(), limit);
+
+  if (rows.length === 0) {
+    await deliverDmOrFallback(
+      interaction,
+      isEnglish
+        ? `🔍 No messages in tracked channels in the last ${hours}h.`
+        : `🔍 监控频道在最近 ${hours} 小时内没有消息。`
+    );
+    return;
+  }
+
+  // rows 是按 created_at 升序返回的，最新的就在末尾——取末尾 limit 条
+  const sliced = rows.slice(-limit);
+  const channelName = sliced[sliced.length - 1].channel_name || (await resolveChannelName(sliced[sliced.length - 1].channel_id));
+
+  const text = isEnglish
+    ? `📜 **#${channelName} · recent messages**\nRange: ${rangeText} (${durText})\n${sliced.length} messages\n\n` +
+      buildTranscript(sliced)
+    : `📜 **#${channelName} · 最近消息**\n区间：${rangeText}（${durText}）\n共 ${sliced.length} 条\n\n` +
+      buildTranscript(sliced);
+  await deliverDmOrFallback(interaction, text);
 }
 
 /* ============================================================
@@ -322,16 +662,25 @@ client.on(Events.MessageCreate, async (msg) => {
   }
 });
 
+const COMMAND_HANDLERS = {
+  [config.checkCommandName]: handleCheck,
+  status: handleStatus,
+  lookup: handleLookup,
+  search: handleSearch,
+  recent: handleRecent,
+};
+
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
-  if (interaction.commandName !== config.checkCommandName) return;
+  const handler = COMMAND_HANDLERS[interaction.commandName];
+  if (!handler) return;
 
   try {
-    await handleCheck(interaction);
+    await handler(interaction);
   } catch (e) {
     state.lastError = `${new Date().toISOString()} ${e.message}`;
     console.error('[interactionCreate] 处理失败：', e);
-    const text = `❌ 执行出错：${e.message}`;
+    const text = isEnglish ? `❌ Command failed: ${e.message}` : `❌ 执行出错：${e.message}`;
     try {
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply({ content: text });
@@ -340,6 +689,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
     } catch {
       /* 忽略二次失败 */
+    }
+  }
+});
+
+/* 机器人被重新邀请进服务器时：自动注册全部命令并补齐历史消息 */
+client.on(Events.GuildCreate, async (guild) => {
+  console.log(`[机器人] 加入服务器：${guild.name}（${guild.id}）`);
+  await registerCommandsForGuild(guild.id);
+  for (const id of config.trackChannelIds) {
+    try {
+      await backfillChannel(id);
+    } catch (e) {
+      console.error(`[补齐] 频道 ${id} 出错：${e.message}`);
     }
   }
 });
@@ -367,7 +729,6 @@ client.once(Events.ClientReady, async () => {
     }
   }
 
-  // AI 连通性自检（失败也不影响启动）
   const ai = await pingAI();
   console.log(ai.ok ? '[自检] AI 接口连通正常' : `[自检] AI 接口异常：${ai.message}`);
 });
