@@ -1,0 +1,55 @@
+# ============================================================
+# Render Blueprint 配置
+# 用法：Render 控制台 → New → Blueprint → 选择本仓库 → Apply
+# 标了 sync: false 的变量会在创建时提示你手动填写
+# ============================================================
+
+services:
+  - type: web
+    name: discord-mod-tracker
+    runtime: node
+    plan: free # 免费实例：闲置 15 分钟会休眠，需要靠外部定时请求保活
+    region: singapore # 新加坡节点，离国内最近
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+
+      # ---------- 密钥类：创建时手动填 ----------
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: AI_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+
+      # ---------- AI 配置 ----------
+      - key: AI_BASE_URL
+        value: https://api.deepseek.com
+      - key: AI_MODEL
+        value: deepseek-chat
+      - key: AI_MAX_TOKENS
+        value: "4000"
+      - key: AI_TEMPERATURE
+        value: "0.3"
+
+      # ---------- 业务配置 ----------
+      - key: TRACK_CHANNEL_IDS
+        value: "1419607085821333634"
+      - key: WATCH_MEMBERS
+        value: ""
+      - key: CHECK_COMMAND_NAME
+        value: check
+      - key: TIMEZONE
+        value: Asia/Shanghai
+      - key: RETENTION_DAYS
+        value: "90"
+      - key: MAX_SUMMARY_MESSAGES
+        value: "3000"

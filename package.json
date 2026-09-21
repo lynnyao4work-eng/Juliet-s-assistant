@@ -1,0 +1,24 @@
+{
+  "name": "discord-mod-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Discord Bot：记录指定频道消息，并用 /check 命令生成 AI 总结",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "selftest": "node scripts/selftest.js",
+    "syntax": "node --check src/index.js && node --check src/config.js && node --check src/db.js && node --check src/summarize.js && node --check src/format.js && node --check scripts/selftest.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "openai": "^4.73.0"
+  }
+}
