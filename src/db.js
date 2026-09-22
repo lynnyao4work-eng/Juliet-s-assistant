@@ -100,3 +100,15 @@ export async function deleteMessagesOlderThan(days) {
   if (error) throw new Error(`清理旧消息失败：${error.message}`);
   return count ?? 0;
 }
+
+/** 删除超过 N 天的 check 记录（总结历史），释放存储空间 */
+export async function deleteCheckRecordsOlderThan(days) {
+  if (!days || days <= 0) return 0;
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const { error, count } = await supabase
+    .from('check_records')
+    .delete({ count: 'estimated' })
+    .lt('period_end', cutoff);
+  if (error) throw new Error(`清理旧 check 记录失败：${error.message}`);
+  return count ?? 0;
+}

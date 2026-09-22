@@ -24,6 +24,7 @@ import {
   getMessagesBetween,
   saveCheckRecord,
   deleteMessagesOlderThan,
+  deleteCheckRecordsOlderThan,
 } from './db.js';
 import { summarizeMessages, pingAI } from './summarize.js';
 import { buildTranscript, countByAuthor, formatDateTime, humanDuration, splitMessage } from './format.js';
@@ -749,6 +750,20 @@ client.on(Events.GuildCreate, async (guild) => {
   }
 });
 
+/** 定期清理：删除超过 RETENTION_DAYS 天的旧消息和 check 记录（0 = 永久保留） */
+async function runRetentionCleanup() {
+  if (config.retentionDays <= 0) return;
+  try {
+    const removedMsgs = await deleteMessagesOlderThan(config.retentionDays);
+    const removedChecks = await deleteCheckRecordsOlderThan(config.retentionDays);
+    console.log(
+      `[清理] 已删除超过 ${config.retentionDays} 天的旧数据：消息约 ${removedMsgs} 条，check 记录 ${removedChecks} 条`
+    );
+  } catch (e) {
+    console.error(`[清理] 失败：${e.message}`);
+  }
+}
+
 client.once(Events.ClientReady, async () => {
   console.log(`[机器人] 登录成功：${client.user.tag}`);
   state.ready = true;
@@ -763,14 +778,11 @@ client.once(Events.ClientReady, async () => {
     }
   }
 
-  if (config.retentionDays > 0) {
-    try {
-      const removed = await deleteMessagesOlderThan(config.retentionDays);
-      console.log(`[清理] 已删除超过 ${config.retentionDays} 天的旧消息（约 ${removed} 条）`);
-    } catch (e) {
-      console.error(`[清理] 失败：${e.message}`);
-    }
-  }
+  await runRetentionCleanup();
+  // 每 24 小时重复清理一次（服务长期不重启也能持续清旧数据）
+  setInterval(() => {
+    runRetentionCleanup().catch((e) => console.error(`[清理] 失败：${e.message}`));
+  }, 24 * 60 * 60 * 1000).unref();
 
   const ai = await pingAI();
   console.log(ai.ok ? '[自检] AI 接口连通正常' : `[自检] AI 接口异常：${ai.message}`);

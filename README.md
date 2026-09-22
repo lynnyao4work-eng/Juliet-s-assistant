@@ -241,13 +241,13 @@ git push -u origin main
 | 变量名 | 值 |
 |---|---|
 | `NODE_VERSION` | `22` |
-| `AI_BASE_URL` | `https://api.deepseek.com` |
-| `AI_MODEL` | `deepseek-chat` |
+| `AI_BASE_URL` | `https://sub2apis.ruobin.dev/v1`（见下方「切换 AI 供应商」） |
+| `AI_MODEL` | `gpt-5.6` |
 | `TRACK_CHANNEL_IDS` | `1419607085821333634` |
 | `ALLOWED_USER_IDS` | Juliet 的用户 ID（见下方「限制只有指定的人能用」） |
-| `SUMMARY_LANGUAGE` | `English` |
+| `SUMMARY_LANGUAGE` | `Chinese`（命令界面固定英文，这个只控制 AI 总结正文语言） |
 | `TIMEZONE` | `Asia/Shanghai` |
-| `RETENTION_DAYS` | `90` |
+| `RETENTION_DAYS` | `7`（超过 7 天的旧消息和 check 记录自动删除，`0`=永久保留） |
 | `MAX_SUMMARY_MESSAGES` | `3000` |
 
 4. **Create Web Service**。
@@ -406,7 +406,7 @@ AI 生成的总结内容语言由 `SUMMARY_LANGUAGE` 控制：
 | `DISCORD_TOKEN` | ✅ | — | Bot Token |
 | `DISCORD_CLIENT_ID` | ⬜ | — | Application ID，仅用于日志 |
 | `AI_API_KEY` | ✅ | — | DeepSeek 等 AI 的 Key |
-| `AI_BASE_URL` | ⬜ | `https://api.deepseek.com` | 换成任何 OpenAI 兼容接口 |
+| `AI_BASE_URL` | ⬜ | `https://api.deepseek.com` | 任何 OpenAI 兼容接口；中转站地址要带 `/v1` 结尾 |
 | `AI_MODEL` | ⬜ | `deepseek-chat` | 模型名 |
 | `AI_MAX_TOKENS` | ⬜ | `4000` | 单次输出上限 |
 | `AI_TEMPERATURE` | ⬜ | `0.3` | 越低越稳定 |
@@ -417,9 +417,9 @@ AI 生成的总结内容语言由 `SUMMARY_LANGUAGE` 控制：
 | `WATCH_MEMBERS` | ⬜ | 空 | 重点关注成员，逗号分隔，填了会多输出一节 |
 | `CHECK_COMMAND_NAME` | ⬜ | `check` | 命令名，改成 `sum` 就是 `/sum` |
 | `ALLOWED_USER_IDS` | ⬜ | 空 | 允许使用 `/check` 的用户 ID，逗号分隔。**留空 = 所有人都能用** |
-| `SUMMARY_LANGUAGE` | ⬜ | `Chinese` | 机器人回复与 AI 总结的语言：`Chinese` / `English` |
+| `SUMMARY_LANGUAGE` | ⬜ | `Chinese` | AI 总结正文语言：`Chinese` / `English`（命令界面固定英文） |
 | `TIMEZONE` | ⬜ | `Asia/Shanghai` | 影响日志里显示的时间 |
-| `RETENTION_DAYS` | ⬜ | `0` | 消息保留天数，`0`=永久，建议 `90` |
+| `RETENTION_DAYS` | ⬜ | `0` | 消息保留天数，`0`=永久；当前已设 `7`（每 24 小时自动清理一次） |
 | `MAX_SUMMARY_MESSAGES` | ⬜ | `3000` | 单次总结读取上限 |
 | `PORT` | ⬜ | `3000` | Render 会自动注入，本地才需要改 |
 
@@ -455,10 +455,27 @@ J,Juliet,张三
 
 改 `CHECK_COMMAND_NAME`，比如改成 `q` 就是 `/q`。保存后自动重新注册。
 
-### 减少数据库占用
+### 减少数据库占用（定期清理）
 
-`RETENTION_DAYS=90` 表示每次机器人启动时删除 90 天前的消息。
-如果消息量很大想更激进，改成 `30`。
+`RETENTION_DAYS=7` 表示**机器人会自动删除超过 7 天的旧消息和 check 记录**，
+释放 Supabase 存储空间（免费版只有 500 MB）。
+
+清理时机：**每次启动时 + 之后每 24 小时一次**（服务长期不重启也会持续清理）。
+想保留更久就改大（如 `30`、`90`），设 `0` = 永久保留（不建议，存储会一直涨）。
+
+> 注意：被清理掉的旧消息不再能被 `/lookup` `/search` 查到，`/check` 也只总结保留期内的消息。
+
+### 切换 AI 供应商
+
+任何 **OpenAI 兼容接口**都可以，只需改 3 个环境变量（Render → Environment），代码零改动：
+
+| 供应商 | `AI_BASE_URL` | `AI_MODEL` |
+|---|---|---|
+| DeepSeek（默认） | `https://api.deepseek.com` | `deepseek-chat` |
+| 中转站（当前） | `https://sub2apis.ruobin.dev/v1` | `gpt-5.6`（也支持 `gpt-6`、`gpt-5.6-terra` 等） |
+| OpenRouter | `https://openrouter.ai/api/v1` | `deepseek/deepseek-chat` 等 |
+
+改完把 `AI_API_KEY` 换成对应供应商的 Key，Save 即可。**注意中转站的地址要带 `/v1` 结尾**。
 
 ---
 
