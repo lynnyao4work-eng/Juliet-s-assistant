@@ -1,0 +1,22 @@
+# 依赖
+node_modules/
+
+# 环境变量（含密钥，绝对不要提交）
+.env
+.env.local
+.env.*.local
+
+# 日志与缓存
+*.log
+npm-debug.log*
+logs/
+.cache/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# 工作区元数据（与代码无关）
+.workbuddy/
