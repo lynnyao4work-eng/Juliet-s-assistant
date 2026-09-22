@@ -48,8 +48,13 @@ export async function getLastCheckTime(channelId) {
 /**
  * 查询某个频道在 (since, until] 区间内的消息。
  * Supabase 单次请求最多返回 1000 行，所以这里做了分页。
+ *
+ * @param {boolean} newestFirst
+ *   false（默认）：取区间内**最早**的 maxMessages 条（适合按时间顺序整理）
+ *   true：取区间内**最新**的 maxMessages 条（适合"看最近发生了什么"）
+ * 无论哪种，返回值都按时间**正序**（老 → 新）排列，方便直接展示。
  */
-export async function getMessagesBetween(channelId, sinceIso, untilIso, maxMessages) {
+export async function getMessagesBetween(channelId, sinceIso, untilIso, maxMessages, newestFirst = false) {
   const pageSize = 1000;
   const rows = [];
   let from = 0;
@@ -62,7 +67,7 @@ export async function getMessagesBetween(channelId, sinceIso, untilIso, maxMessa
       .eq('channel_id', channelId)
       .gt('created_at', sinceIso)
       .lte('created_at', untilIso)
-      .order('created_at', { ascending: true })
+      .order('created_at', { ascending: !newestFirst })
       .range(from, to);
 
     if (error) throw new Error(`读取 messages 失败：${error.message}`);
@@ -73,7 +78,9 @@ export async function getMessagesBetween(channelId, sinceIso, untilIso, maxMessa
     from += pageSize;
   }
 
-  return rows.slice(0, maxMessages);
+  const sliced = rows.slice(0, maxMessages);
+  // 当按"最新优先"读取时，rows 是从新到老的，反转成正序返回
+  return newestFirst ? sliced.reverse() : sliced;
 }
 
 /** 保存一条 check 记录 */

@@ -366,21 +366,29 @@ AI 生成的总结内容语言由 `SUMMARY_LANGUAGE` 控制：
 | 参数 | 作用 | 示例 |
 |---|---|---|
 | `hours` | 不看"上次 check"，改为只看最近 N 小时 | `/check hours:24` |
-| `limit` | 最多总结多少条消息（默认 3000） | `/check limit:500` |
-| `raw` | 不做 AI 总结，只导出原始消息列表（排查用） | `/check raw:True` |
-| `channel` | 指定要总结的频道（默认当前频道） | `/check channel:#mod-room` |
+| `limit` | 最多总结多少条消息（默认 3000）。**超限时保留最新的 N 条**，并在开头提示 | `/check limit:500` |
+| `raw` | `True` = 不做 AI 总结，只导出原始消息列表；`False`（默认）= 正常调 AI 总结 | `/check raw:True` |
+| `channel` | 指定要总结的频道，**只能选已监控的频道**（默认当前频道） | `/check channel:#mod-room` |
 
 > 建议：日常用 `/check`；想只看某个时间段用 `/check hours:12`；
 > AI 总结出问题时用 `/check raw:True` 看原始记录。
+>
+> ⚠️ 关于 `channel`：它只能在**已监控**的频道里挑一个出来总结。想让机器人追踪**新频道**，
+> 必须去 Render 的 Environment 里把新频道 ID 加进 `TRACK_CHANNEL_IDS`（多个用英文逗号分隔），
+> 并在 Discord 里给机器人开通该频道的 **查看频道 + 读取消息历史** 权限——只给权限是不够的，
+> 不在监控列表里的频道，消息根本不会被存进数据库。
 
 ### 其余命令一览
 
 | 命令 | 用途 | 典型场景 |
 |---|---|---|
 | `/status` | 查看机器人运行状态（在线时长、保存消息数、最近错误、AI 配置） | "bot 还活着吗？" |
-| `/lookup <user> [hours] [limit]` | 查某成员最近 N 小时的所有发言 | "昨天 22 点 Alice 到底说了什么" |
-| `/search <keyword> [hours] [limit]` | 按关键词搜索最近消息（内容 + 用户名） | "上次讨论 NSFW 政策是什么时候" |
-| `/recent [hours] [limit]` | 查看最近 N 条原始消息（不带 AI 总结） | AI 抽风时看实时情况 |
+| `/lookup <user> [hours] [limit]` | 查某成员最近 N 小时的发言，**返回最新的 limit 条**（默认 50） | "昨天 22 点 Alice 到底说了什么" |
+| `/search <keyword> [hours] [limit]` | 按关键词搜索消息（内容 + 用户名），**返回最新的 limit 条匹配**（默认 50） | "上次讨论 NSFW 政策是什么时候" |
+| `/recent [hours] [limit]` | 查看**最近**的原始消息（不带 AI 总结，默认 6 小时 / 30 条） | AI 抽风时看实时情况 |
+
+> 这三个命令的 `limit` 都是**取最新的 N 条**（不是最早的）。如果命中的消息总数超过 `limit`，
+> 结果里会有一行提示告诉你"另有 X 条更早的消息未显示"。
 
 **所有命令的输出都通过 DM 发给你**，频道里不留任何痕迹。命令都受同一份 `ALLOWED_USER_IDS` 白名单控制。
 

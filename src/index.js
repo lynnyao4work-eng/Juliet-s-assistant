@@ -235,18 +235,23 @@ async function resolveChannelName(channelId) {
   }
 }
 
-/** 在所有被监控频道里取一段时间的消息，平铺到一个数组 */
-async function fetchAllTracked(sinceIso, untilIso, perChannelLimit) {
+/**
+ * 在所有被监控频道里取一段时间的消息，平铺到一个数组。
+ * `newestFirst=true` 时每个频道都取"最新"的 limit 条（而不是最早的）。
+ * 返回值统一按时间正序（老 → 新）排列。
+ */
+async function fetchAllTracked(sinceIso, untilIso, perChannelLimit, newestFirst = false) {
   const out = [];
   for (const id of config.trackChannelIds) {
     try {
-      const rows = await getMessagesBetween(id, sinceIso, untilIso, perChannelLimit);
+      const rows = await getMessagesBetween(id, sinceIso, untilIso, perChannelLimit, newestFirst);
       out.push(...rows);
     } catch (e) {
       console.warn(`[查询] 频道 ${id}：${e.message}`);
     }
   }
-  return out;
+  // 跨频道合并后重新按时间排序，保证全局正序
+  return out.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 }
 
 /* ============================================================
@@ -373,7 +378,20 @@ async function handleCheck(interaction) {
   let channelId = picked?.id ?? interaction.channelId;
 
   if (!config.trackChannelIds.includes(channelId)) {
+    if (picked) {
+      // 用户明确指定了一个未被监控的频道 → 直接告知，不做静默替换
+      const text = isEnglish
+        ? `❌ Channel <#${picked.id}> is not in the tracked list.\n` +
+          `Currently tracked: ${config.trackChannelIds.map((id) => `<#${id}>`).join(', ')}\n` +
+          'To track a new channel, add its ID to `TRACK_CHANNEL_IDS` and give the bot access to it.'
+        : `❌ 频道 <#${picked.id}> 不在监控列表中。\n` +
+          `当前监控：${config.trackChannelIds.map((id) => `<#${id}>`).join('、')}\n` +
+          '要监控新频道，请把它的 ID 加入 `TRACK_CHANNEL_IDS`，并给机器人开通该频道权限。';
+      await interaction.editReply({ content: text });
+      return;
+    }
     if (config.trackChannelIds.length === 1) {
+      // 没指定频道（例如在别的频道输入 /check）→ 自动回退到唯一的监控频道
       channelId = config.trackChannelIds[0];
     } else {
       const text = isEnglish
@@ -412,8 +430,14 @@ async function handleCheck(interaction) {
     }
   }
 
-  // 3. 取消息
-  const messages = await getMessagesBetween(channelId, since.toISOString(), until.toISOString(), limit);
+  // 3. 取消息（优先取"最近"的 limit 条：消息量过大时保住最新内容）
+  const messages = await getMessagesBetween(channelId, since.toISOString(), until.toISOString(), limit, true);
+  const truncated = messages.length >= limit;
+  const truncNote = truncated
+    ? isEnglish
+      ? `\n> ⚠️ Message count hit the ${limit} cap — only the most recent ${limit} messages were analysed.`
+      : `\n> ⚠️ 消息数达到上限 ${limit} 条，仅分析了最近 ${limit} 条。`
+    : '';
 
   if (messages.length === 0) {
     await deliverDmOrFallback(
@@ -432,9 +456,9 @@ async function handleCheck(interaction) {
   // 4a. 调试模式：只发原始列表（DM 给用户）
   if (rawMode) {
     const text = isEnglish
-      ? `📋 **#${channelName} · raw messages**\nRange: ${rangeText} (${durationText})\n${messages.length} messages · ${authors.length} participants\n\n` +
+      ? `📋 **#${channelName} · raw messages**\nRange: ${rangeText} (${durationText})\n${messages.length} messages · ${authors.length} participants\n${truncNote}\n` +
         buildTranscript(messages)
-      : `📋 **#${channelName} · 原始消息**\n区间：${rangeText}（${durationText}）\n共 ${messages.length} 条 · ${authors.length} 人发言\n\n` +
+      : `📋 **#${channelName} · 原始消息**\n区间：${rangeText}（${durationText}）\n共 ${messages.length} 条 · ${authors.length} 人发言\n${truncNote}\n` +
         buildTranscript(messages);
     await deliverDmOrFallback(interaction, text);
     return;
@@ -462,6 +486,7 @@ async function handleCheck(interaction) {
       `**Messages**: ${messages.length} · **Participants**: ${authors.length}\n` +
       `**Top posters**: ${authors.slice(0, 10).map(([n, c]) => `${n}(${c})`).join(', ')}\n` +
       `**Window**: ${sinceSource}\n` +
+      `${truncNote}\n` +
       `────────────────────\n\n` +
       aiText
     : `📋 **#${channelName} · 消息总结**\n` +
@@ -469,6 +494,7 @@ async function handleCheck(interaction) {
       `**消息总数**：${messages.length} 条 · **参与成员**：${authors.length} 人\n` +
       `**发言排行**：${authors.slice(0, 10).map(([n, c]) => `${n}(${c})`).join('、')}\n` +
       `**数据来源**：${sinceSource}\n` +
+      `${truncNote}\n` +
       `────────────────────\n\n` +
       aiText;
   const result = await deliverDmOrFallback(interaction, summaryText);
@@ -537,11 +563,12 @@ async function handleLookup(interaction) {
   const rangeText = `${formatDateTime(since)} → ${formatDateTime(until)}`;
   const durText = humanDuration(hours * 3600 * 1000);
 
-  // 在所有监控频道里查；取一个比 limit 大几倍的上限再在内存里筛
-  const rows = await fetchAllTracked(since.toISOString(), until.toISOString(), limit * 5);
-  const matched = rows
-    .filter((m) => m.author_id === user.id)
-    .slice(0, limit);
+  // 在所有监控频道里查最近的消息，再筛出该成员；取"最新"的 limit 条
+  const scan = Math.min(Math.max(limit * 20, 500), 5000);
+  const rows = await fetchAllTracked(since.toISOString(), until.toISOString(), scan, true);
+  const allFromUser = rows.filter((m) => m.author_id === user.id);
+  const matched = allFromUser.slice(-limit); // rows 正序，末尾即最新
+  const hiddenCount = allFromUser.length - matched.length;
 
   if (matched.length === 0) {
     await deliverDmOrFallback(
@@ -556,11 +583,16 @@ async function handleLookup(interaction) {
   // 频道名字（第一条所在频道就行）
   const firstChannelId = matched[0].channel_id;
   const channelName = matched[0].channel_name || (await resolveChannelName(firstChannelId));
+  const moreNote = hiddenCount > 0
+    ? isEnglish
+      ? `\n_(+${hiddenCount} earlier messages omitted; showing the most recent ${matched.length})_`
+      : `\n_（另有 ${hiddenCount} 条更早的消息未显示，这里只列最近的 ${matched.length} 条）_`
+    : '';
 
   const text = isEnglish
-    ? `🔍 **#${channelName} · messages by ${user.username}**\nRange: ${rangeText} (${durText})\n${matched.length} messages\n\n` +
+    ? `🔍 **#${channelName} · messages by ${user.username}**\nRange: ${rangeText} (${durText})\n${matched.length} messages${moreNote}\n\n` +
       buildTranscript(matched)
-    : `🔍 **#${channelName} · ${user.username} 的发言**\n区间：${rangeText}（${durText}）\n共 ${matched.length} 条\n\n` +
+    : `🔍 **#${channelName} · ${user.username} 的发言**\n区间：${rangeText}（${durText}）\n共 ${matched.length} 条${moreNote}\n\n` +
       buildTranscript(matched);
   await deliverDmOrFallback(interaction, text);
 }
@@ -580,16 +612,17 @@ async function handleSearch(interaction) {
   const rangeText = `${formatDateTime(since)} → ${formatDateTime(until)}`;
   const durText = humanDuration(hours * 3600 * 1000);
 
-  const rows = await fetchAllTracked(since.toISOString(), until.toISOString(), limit * 5);
+  const scan = Math.min(Math.max(limit * 20, 500), 5000);
+  const rows = await fetchAllTracked(since.toISOString(), until.toISOString(), scan, true);
   const lcKw = keyword.toLowerCase();
-  const matched = rows
-    .filter(
-      (m) =>
-        (m.content ?? '').toLowerCase().includes(lcKw) ||
-        (m.author_name ?? '').toLowerCase().includes(lcKw) ||
-        (m.author_display_name ?? '').toLowerCase().includes(lcKw)
-    )
-    .slice(0, limit);
+  const allMatched = rows.filter(
+    (m) =>
+      (m.content ?? '').toLowerCase().includes(lcKw) ||
+      (m.author_name ?? '').toLowerCase().includes(lcKw) ||
+      (m.author_display_name ?? '').toLowerCase().includes(lcKw)
+  );
+  const matched = allMatched.slice(-limit); // 正序，末尾即最新
+  const hiddenCount = allMatched.length - matched.length;
 
   if (matched.length === 0) {
     await deliverDmOrFallback(
@@ -603,11 +636,16 @@ async function handleSearch(interaction) {
 
   const firstChannelId = matched[0].channel_id;
   const channelName = matched[0].channel_name || (await resolveChannelName(firstChannelId));
+  const moreNote = hiddenCount > 0
+    ? isEnglish
+      ? `\n_(+${hiddenCount} earlier matches omitted; showing the most recent ${matched.length})_`
+      : `\n_（另有 ${hiddenCount} 条更早的匹配未显示，这里只列最近的 ${matched.length} 条）_`
+    : '';
 
   const text = isEnglish
-    ? `🔍 **#${channelName} · search "${keyword}"**\nRange: ${rangeText} (${durText})\n${matched.length} matches\n\n` +
+    ? `🔍 **#${channelName} · search "${keyword}"**\nRange: ${rangeText} (${durText})\n${matched.length} matches${moreNote}\n\n` +
       buildTranscript(matched)
-    : `🔍 **#${channelName} · 搜索 "${keyword}"**\n区间：${rangeText}（${durText}）\n匹配 ${matched.length} 条\n\n` +
+    : `🔍 **#${channelName} · 搜索 "${keyword}"**\n区间：${rangeText}（${durText}）\n匹配 ${matched.length} 条${moreNote}\n\n` +
       buildTranscript(matched);
   await deliverDmOrFallback(interaction, text);
 }
@@ -626,7 +664,8 @@ async function handleRecent(interaction) {
   const rangeText = `${formatDateTime(since)} → ${formatDateTime(until)}`;
   const durText = humanDuration(hours * 3600 * 1000);
 
-  const rows = await fetchAllTracked(since.toISOString(), until.toISOString(), limit);
+  // 取"最新"的 limit 条（返回值已按时间正序排列）
+  const rows = await fetchAllTracked(since.toISOString(), until.toISOString(), limit, true);
 
   if (rows.length === 0) {
     await deliverDmOrFallback(
@@ -638,8 +677,7 @@ async function handleRecent(interaction) {
     return;
   }
 
-  // rows 是按 created_at 升序返回的，最新的就在末尾——取末尾 limit 条
-  const sliced = rows.slice(-limit);
+  const sliced = rows;
   const channelName = sliced[sliced.length - 1].channel_name || (await resolveChannelName(sliced[sliced.length - 1].channel_id));
 
   const text = isEnglish
