@@ -11,7 +11,12 @@ import {
   MessageFlags,
 } from 'discord.js';
 
-import { config, isEnglish, printConfigSummary } from './config.js';
+import { config, printConfigSummary } from './config.js';
+
+// Command UI text (descriptions, replies, errors) is ALWAYS English,
+// per the original requirement that "all command explanations must be in English".
+// Only the AI summary body follows SUMMARY_LANGUAGE (handled in summarize.js).
+const isEnglish = true;
 import {
   upsertMessages,
   getNewestMessageTime,
