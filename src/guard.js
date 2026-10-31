@@ -3,8 +3,8 @@
  *
  * 触发规则（任一命中即触发）：
  *   1. 单条消息字符数 > guard.maxChars（默认 400）
- *   2. 窗口期（默认 5 分钟）内消息数 > guard.maxMessages（默认 3）
- *      且这些消息合计字符数 > guard.windowChars（默认 600）
+ *   2. 窗口期（默认 5 分钟）内消息数 > guard.maxMessages（默认 2）
+ *      且这些消息合计字符数 > guard.windowChars（默认 500）
  *
  * 处置方式：
  *   - 服务器所有者 / 拥有 Administrator 权限 / 拥有配置的管理员角色 → 完全跳过

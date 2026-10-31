@@ -104,10 +104,10 @@ export const config = {
     maxChars: int('GUARD_MAX_CHARS', 400),
     // 规则 2：窗口长度（分钟）
     windowMinutes: int('GUARD_WINDOW_MINUTES', 5),
-    // 规则 2：窗口内消息条数上限（超过才可能触发）
-    maxMessages: int('GUARD_MAX_MESSAGES', 3),
-    // 规则 2：窗口内合计字符上限（超过才可能触发）
-    windowChars: int('GUARD_WINDOW_CHARS', 600),
+    // 规则 2：窗口内消息条数上限（超过才可能触发，即 >2 条）
+    maxMessages: int('GUARD_MAX_MESSAGES', 2),
+    // 规则 2：窗口内合计字符上限（超过才可能触发，即 >500 字符）
+    windowChars: int('GUARD_WINDOW_CHARS', 500),
     // 额外豁免的管理员角色（Administrator 权限与服务器所有者本身已自动豁免）
     adminRoleIds: list('GUARD_ADMIN_ROLE_IDS'),
     // premium 角色：只删消息 + 禁言，不封禁

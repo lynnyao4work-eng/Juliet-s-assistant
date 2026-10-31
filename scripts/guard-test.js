@@ -88,24 +88,29 @@ check('触发时只带这一条', t401?.messageCount, 1);
 check('触发时字符数正确', t401?.totalChars, 401);
 
 /* ---------- 3. 规则 2：窗口刷屏 ---------- */
-console.log('\n【3/7】规则 2：窗口刷屏（条数与字符数都要超）');
+console.log('\n【3/7】规则 2：窗口刷屏（条数 >2 且合计 >500 字符）');
 check(
-  '3 条各 300 字符不触发（条数未超）',
-  detectTrigger([entry(300), entry(300), entry(300)], NOW),
+  '2 条各 300 字符不触发（条数未超，即使合计 600）',
+  detectTrigger([entry(300), entry(300)], NOW),
   null
 );
 check(
-  '4 条共 600 字符不触发（字符数未超）',
-  detectTrigger([entry(150), entry(150), entry(150), entry(150)], NOW),
+  '3 条共 450 字符不触发（字符数未超）',
+  detectTrigger([entry(150), entry(150), entry(150)], NOW),
   null
 );
-const flood = detectTrigger([entry(151), entry(151), entry(151), entry(151)], NOW);
-check('4 条共 604 字符触发', flood?.kind, 'flood');
-check('触发时统计 4 条', flood?.messageCount, 4);
-check('触发时合计字符 604', flood?.totalChars, 604);
 check(
-  '5 条共 605 字符也触发',
-  detectTrigger([entry(121), entry(121), entry(121), entry(121), entry(121)], NOW)?.kind,
+  '3 条正好 500 字符不触发（边界，严格大于）',
+  detectTrigger([entry(200), entry(150), entry(150)], NOW),
+  null
+);
+const flood = detectTrigger([entry(167), entry(167), entry(167)], NOW);
+check('3 条共 501 字符触发', flood?.kind, 'flood');
+check('触发时统计 3 条', flood?.messageCount, 3);
+check('触发时合计字符 501', flood?.totalChars, 501);
+check(
+  '5 条共 505 字符也触发',
+  detectTrigger([entry(101), entry(101), entry(101), entry(101), entry(101)], NOW)?.kind,
   'flood'
 );
 
@@ -290,16 +295,28 @@ for (let i = 0; i < 8; i += 1) {
 check('封禁失败只尝试一次（冷却生效）', rejectMember._calls.ban, 1);
 check('封禁失败仍发 2 条私信（报告 + 失败说明）', dmCount, 2);
 
-// 7-7 刷屏规则：4 条 151 字符 → 第 4 条触发
+// 7-7 刷屏规则：3 条各 151 字符 = 453（未超 500）→ 第 4 条累计 604 触发
 resetGuardState();
 dmCount = 0;
 const floodMember = fakeMember({ id: '300' });
 for (let i = 0; i < 3; i += 1) {
   await handleGuardMessage(fakeMessage(floodMember, { content: 'x'.repeat(151) }));
 }
-check('前 3 条不触发', floodMember._calls.ban, 0);
+check('前 3 条合计 453 字符不触发', floodMember._calls.ban, 0);
 await handleGuardMessage(fakeMessage(floodMember, { content: 'x'.repeat(151) }));
-check('第 4 条触发封禁', floodMember._calls.ban, 1);
+check('第 4 条累计 604 字符触发封禁', floodMember._calls.ban, 1);
+
+// 7-8 新阈值下限：3 条各 167 字符 = 501 → 第 3 条即触发
+resetGuardState();
+dmCount = 0;
+const nearMember = fakeMember({ id: '400' });
+for (let i = 0; i < 2; i += 1) {
+  await handleGuardMessage(fakeMessage(nearMember, { content: 'x'.repeat(167) }));
+}
+check('2 条各 167 不触发（条数未超）', nearMember._calls.ban, 0);
+await handleGuardMessage(fakeMessage(nearMember, { content: 'x'.repeat(167) }));
+check('第 3 条累计 501 字符触发封禁', nearMember._calls.ban, 1);
+check('刷屏触发同样发 2 条私信', dmCount, 2);
 
 /* ---------- 汇总 ---------- */
 console.log(`\n===== 结果：${passed} 通过，${failed} 失败 =====\n`);
