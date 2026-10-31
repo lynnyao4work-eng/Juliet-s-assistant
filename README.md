@@ -193,7 +193,7 @@ https://discord.com/oauth2/authorize?client_id=1551412653367369738&scope=bot%20a
 git config --global user.name "你的名字"
 git config --global user.email "你的邮箱"
 
-cd "/Users/linyao/Desktop/discord bot"
+cd ~/WorkBuddy/Juliet-s-assistant
 git commit -m "init: discord mod tracker"
 git remote add origin https://github.com/你的用户名/discord-mod-tracker.git
 git push -u origin main
@@ -485,7 +485,7 @@ J,Juliet,张三
 并明确告诉你哪一步有问题、怎么修。
 
 ```bash
-cd "/Users/linyao/Desktop/discord bot"
+cd ~/WorkBuddy/Juliet-s-assistant
 npm run selftest
 ```
 
@@ -582,13 +582,73 @@ Discord 开发者后台 → Bot → **Reset Token** → 复制新 Token →
 需要电脑上装好 Node.js 20+。
 
 ```bash
-cd "/Users/linyao/Desktop/discord bot"
+cd ~/WorkBuddy/Juliet-s-assistant
 cp .env.example .env      # 然后编辑 .env，填入真实密钥
 npm install
 npm start
 ```
 
 浏览器打开 http://localhost:3000/status 可以看到运行状态。
+
+---
+
+## 反刷屏守卫（Spam Guard）
+
+除记录消息之外，机器人还会在指定频道里做实时守卫：命中规则后**记录证据 → 私信报告 → 执行处置**。
+
+### 触发规则（任一命中）
+
+| 规则 | 默认阈值 |
+|---|---|
+| 单条消息过长 | 字符数 **> 400** |
+| 短时间刷屏 | **5 分钟**内消息数 **> 3** 条，且这些消息合计 **> 600** 字符 |
+
+字符数按**码点**统计，一个 emoji 算 1 个字符。线程（帖子）里的消息按**父频道**归属，所以帖子里的刷屏同样会被抓到。
+
+### 处置方式
+
+| 成员身份 | 处置 |
+|---|---|
+| 服务器所有者 / 有 Administrator 权限 / `GUARD_ADMIN_ROLE_IDS` 里的角色 | **完全跳过** |
+| 有 premium 角色（默认 `1402583341059932200`） | 删除本批消息 + 禁言 **7 天**，**不封禁** |
+| 其他成员 | 先私信报告，再**封禁**（连带删除最近 24 小时消息），最后私信封禁结果 |
+
+报告私信默认发给 Juliet（`1362424024243634176`）。**先发报告再封禁**：即使私信失败也会照常封禁，只是会在日志里留下完整报告内容。
+
+### 环境变量（全部可选，不配就用默认值）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `GUARD_ENABLED` | `on` | 设为 `off` **秒级关闭**守卫，无需改代码 |
+| `GUARD_CHANNEL_IDS` | 内置 5 个频道 | 要监控的频道，逗号分隔 |
+| `GUARD_MAX_CHARS` | `400` | 单条字符上限 |
+| `GUARD_WINDOW_MINUTES` | `5` | 刷屏统计窗口 |
+| `GUARD_MAX_MESSAGES` | `3` | 窗口内条数上限 |
+| `GUARD_WINDOW_CHARS` | `600` | 窗口内合计字符上限 |
+| `GUARD_ADMIN_ROLE_IDS` | 空 | 额外豁免的管理员角色 |
+| `GUARD_PREMIUM_ROLE_IDS` | `1402583341059932200` | premium 角色 |
+| `GUARD_REPORT_USER_IDS` | `1362424024243634176` | 报告私信收件人 |
+| `GUARD_BAN_DELETE_SECONDS` | `86400` | 封禁连带删除多少秒的消息（上限 604800） |
+| `GUARD_TIMEOUT_DAYS` | `7` | premium 禁言天数 |
+| `GUARD_COOLDOWN_MINUTES` | `10` | 处置失败后的冷却时间，避免反复触发刷爆私信 |
+
+### 需要的机器人权限
+
+- **Ban Members**（封禁）
+- **Moderate Members**（禁言）
+- **Manage Messages**（删除 premium 成员的消息）
+- 机器人角色位置要**高于**被处置的成员
+
+少了任何一个，处置会失败并在私信里明确写 `FAILED (manual action needed)`，不会静默。
+
+### 验证
+
+```bash
+npm run syntax      # 语法检查
+npm run guard-test  # 守卫判定逻辑自检（离线，不连 Discord）
+```
+
+守卫的窗口、占用与冷却都存在内存里，**重启即清空** —— 只会漏判，不会误判。
 
 ---
 
@@ -601,7 +661,11 @@ discord bot/
 │   ├── config.js      # 读取和校验环境变量
 │   ├── db.js          # Supabase 读写（消息、check 记录）
 │   ├── summarize.js   # 调用 AI 生成总结（含超长日志分段）
+│   ├── guard.js       # 反刷屏守卫：判定 + 处置 + 私信报告
 │   └── format.js      # 时间格式化、消息转文本、长文本切分
+├── scripts/
+│   ├── selftest.js    # 连真实环境的自检（配置 / 数据库 / AI / Discord）
+│   └── guard-test.js  # 守卫判定逻辑的离线自检
 ├── supabase/
 │   └── schema.sql     # 数据库建表脚本
 ├── render.yaml        # Render 部署蓝图

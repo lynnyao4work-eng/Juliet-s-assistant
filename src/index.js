@@ -28,6 +28,7 @@ import {
 } from './db.js';
 import { summarizeMessages, pingAI } from './summarize.js';
 import { buildTranscript, countByAuthor, formatDateTime, humanDuration, splitMessage } from './format.js';
+import { handleGuardMessage } from './guard.js';
 
 /* ============================================================
    Discord 客户端
@@ -704,6 +705,18 @@ client.on(Events.MessageCreate, async (msg) => {
     state.lastError = `${new Date().toISOString()} ${e.message}`;
     console.error('[messageCreate] 保存失败：', e.message);
   }
+});
+
+/* ============================================================
+   反刷屏守卫（新增，独立监听器）
+   与上面的记录逻辑互不影响：这里不 await，守卫内部的异常也不会冒泡到记录流程。
+   紧急关闭：环境变量 GUARD_ENABLED=off（重启即生效，无需改代码）
+   移除方式：删掉本段 + 顶部 import + src/guard.js 即可
+   ============================================================ */
+client.on(Events.MessageCreate, (msg) => {
+  handleGuardMessage(msg).catch((e) => {
+    console.error('[守卫] 处理异常：', e?.message ?? e);
+  });
 });
 
 const COMMAND_HANDLERS = {
