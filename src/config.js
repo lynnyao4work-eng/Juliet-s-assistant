@@ -100,13 +100,13 @@ export const config = {
     // 要监控的频道（默认上面那 5 个）
     channelIds: listOr('GUARD_CHANNEL_IDS', GUARD_DEFAULT_CHANNEL_IDS),
     // 规则 1：单条达到多少字符就触发（含等于，即 >=）
-    maxChars: int('GUARD_MAX_CHARS', 500),
+    maxChars: int('GUARD_MAX_CHARS', 1000),
     // 规则 2：窗口长度（分钟）
     windowMinutes: int('GUARD_WINDOW_MINUTES', 5),
     // 规则 2：窗口内消息条数上限（超过才可能触发，即 >2 条）
     maxMessages: int('GUARD_MAX_MESSAGES', 2),
-    // 规则 2：窗口内合计字符上限（达到才触发，即 >=1000）
-    windowChars: int('GUARD_WINDOW_CHARS', 1000),
+    // 规则 2：窗口内合计字符上限（达到才触发，即 >=1500）
+    windowChars: int('GUARD_WINDOW_CHARS', 1500),
     // 额外豁免的管理员角色（Administrator 权限与服务器所有者本身已自动豁免）
     adminRoleIds: list('GUARD_ADMIN_ROLE_IDS'),
     // 接收报告私信的用户（默认 Juliet）

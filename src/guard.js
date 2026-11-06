@@ -2,9 +2,9 @@
  * 反刷屏守卫：监控指定频道，命中规则后记录证据、私信报告人、执行禁言 + 删除本批消息。
  *
  * 触发规则（任一命中即触发）：
- *   1. 单条消息字符数 >= guard.maxChars（默认 500）
+ *   1. 单条消息字符数 >= guard.maxChars（默认 1000）
  *   2. 窗口期（默认 5 分钟）内消息数 > guard.maxMessages（默认 2）
- *      且这些消息合计字符数 >= guard.windowChars（默认 1000）
+ *      且这些消息合计字符数 >= guard.windowChars（默认 1500）
  *
  * 处置方式（所有人一致，不再区分身份）：
  *   - 服务器所有者 / 拥有 Administrator 权限 / 拥有配置的管理员角色 → 完全跳过
@@ -79,7 +79,7 @@ export function isExemptMember(member, guild) {
 export function detectTrigger(entries, now = Date.now()) {
   if (!entries || entries.length === 0) return null;
 
-  // 规则 1：单条达到上限（含等于，500 就算命中）
+  // 规则 1：单条达到上限（含等于，1000 就算命中）
   const last = entries[entries.length - 1];
   if (last.chars >= g.maxChars) {
     return {

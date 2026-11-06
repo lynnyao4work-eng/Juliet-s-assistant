@@ -72,7 +72,7 @@ console.log(
 
 /* ---------- 1. 字符计数 ---------- */
 console.log('【1/7】字符计数口径');
-check('500 个 ASCII 字符 = 500', countChars('x'.repeat(500)), 500);
+check('1000 个 ASCII 字符 = 1000', countChars('x'.repeat(1000)), 1000);
 check('一个 emoji 算 1 个字符', countChars('👍'), 1);
 check('emoji 组合串按码点计', countChars('👍👍👍'), 3);
 check('空内容算 0', countChars(''), 0);
@@ -80,51 +80,51 @@ check('null 安全', countChars(null), 0);
 
 /* ---------- 2. 规则 1：单条达到阈值 ---------- */
 console.log('\n【2/7】规则 1：单条达到阈值（含等于）');
-check('499 字符不触发', detectTrigger([entry(499)], NOW), null);
-const t500 = detectTrigger([entry(500)], NOW);
-check('500 字符触发（边界，含等于）', t500?.kind, 'length');
-check('触发时只带这一条', t500?.messageCount, 1);
-check('触发时字符数正确', t500?.totalChars, 500);
-check('501 字符也触发', detectTrigger([entry(501)], NOW)?.kind, 'length');
+check('999 字符不触发', detectTrigger([entry(999)], NOW), null);
+const t1000 = detectTrigger([entry(1000)], NOW);
+check('1000 字符触发（边界，含等于）', t1000?.kind, 'length');
+check('触发时只带这一条', t1000?.messageCount, 1);
+check('触发时字符数正确', t1000?.totalChars, 1000);
+check('1001 字符也触发', detectTrigger([entry(1001)], NOW)?.kind, 'length');
 
 /* ---------- 3. 规则 2：窗口刷屏 ---------- */
-console.log('\n【3/7】规则 2：窗口刷屏（条数 >2 且合计 >=1000 字符）');
+console.log('\n【3/7】规则 2：窗口刷屏（条数 >2 且合计 >=1500 字符）');
 check(
-  '2 条各 480 字符不触发（条数未超，合计 960）',
-  detectTrigger([entry(480), entry(480)], NOW),
+  '2 条各 740 字符不触发（条数未超，合计 1480）',
+  detectTrigger([entry(740), entry(740)], NOW),
   null
 );
 check(
-  '3 条各 300 字符不触发（合计 900 未达 1000）',
-  detectTrigger([entry(300), entry(300), entry(300)], NOW),
+  '3 条各 490 字符不触发（合计 1470 未达 1500）',
+  detectTrigger([entry(490), entry(490), entry(490)], NOW),
   null
 );
-const flood = detectTrigger([entry(334), entry(333), entry(333)], NOW);
-check('3 条合计正好 1000 字符触发（边界，含等于）', flood?.kind, 'flood');
+const flood = detectTrigger([entry(500), entry(500), entry(500)], NOW);
+check('3 条合计正好 1500 字符触发（边界，含等于）', flood?.kind, 'flood');
 check('触发时统计 3 条', flood?.messageCount, 3);
-check('触发时合计字符 1000', flood?.totalChars, 1000);
+check('触发时合计字符 1500', flood?.totalChars, 1500);
 check(
-  '5 条各 200 合计 1000 字符也触发',
-  detectTrigger([entry(200), entry(200), entry(200), entry(200), entry(200)], NOW)?.kind,
+  '5 条各 300 合计 1500 字符也触发',
+  detectTrigger([entry(300), entry(300), entry(300), entry(300), entry(300)], NOW)?.kind,
   'flood'
 );
 
 /* ---------- 4. 窗口边界 ---------- */
 console.log('\n【4/7】窗口边界（5 分钟）');
 const expired = [
-  entry(400, { at: NOW - 6 * 60 * 1000 }),
-  entry(400, { at: NOW - 6 * 60 * 1000 }),
-  entry(400, { at: NOW - 6 * 60 * 1000 }),
-  entry(400, { at: NOW }),
+  entry(600, { at: NOW - 6 * 60 * 1000 }),
+  entry(600, { at: NOW - 6 * 60 * 1000 }),
+  entry(600, { at: NOW - 6 * 60 * 1000 }),
+  entry(600, { at: NOW }),
 ];
 check('窗口外的旧消息不计入', detectTrigger(expired, NOW)?.kind, undefined);
 const inWindow = [
-  entry(300, { at: NOW - 4 * 60 * 1000 }),
-  entry(300, { at: NOW - 3 * 60 * 1000 }),
-  entry(300, { at: NOW - 2 * 60 * 1000 }),
-  entry(300, { at: NOW }),
+  entry(400, { at: NOW - 4 * 60 * 1000 }),
+  entry(400, { at: NOW - 3 * 60 * 1000 }),
+  entry(400, { at: NOW - 2 * 60 * 1000 }),
+  entry(400, { at: NOW }),
 ];
-check('窗口内的消息计入（4 条合计 1200）', detectTrigger(inWindow, NOW)?.kind, 'flood');
+check('窗口内的消息计入（4 条合计 1600）', detectTrigger(inWindow, NOW)?.kind, 'flood');
 check('空数组不触发', detectTrigger([], NOW), null);
 
 /* ---------- 5. 频道归属与豁免 ---------- */
@@ -149,13 +149,13 @@ const report = buildTriggerReport({
   member: reportMember,
   trigger: {
     kind: 'length',
-    entries: [entry(500, { channelName: 'general' })],
+    entries: [entry(1000, { channelName: 'general' })],
     messageCount: 1,
-    totalChars: 500,
+    totalChars: 1000,
   },
   channelNames: ['#general'],
 });
-check('报告含规则说明', report.includes('at least 500 chars'), true);
+check('报告含规则说明', report.includes('at least 1000 chars'), true);
 check('报告含用户 ID', report.includes('123456789'), true);
 check('报告含频道名', report.includes('#general'), true);
 check('报告含引用块', report.includes('> xxx'), true);
@@ -230,13 +230,13 @@ function fakeMessage(member, { content = '', channelId = WATCHED, deleted = [] }
 
 const { handleGuardMessage } = await import('../src/guard.js');
 
-// 7-1 普通成员发 500 字符 → 禁言 + 删消息 + 两条私信（报告 + 结果）
+// 7-1 普通成员发 1000 字符 → 禁言 + 删消息 + 两条私信（报告 + 结果）
 resetGuardState();
 dmCount = 0;
 const normalMember = fakeMember();
 const normalDeleted = [];
 await handleGuardMessage(
-  fakeMessage(normalMember, { content: 'x'.repeat(500), deleted: normalDeleted })
+  fakeMessage(normalMember, { content: 'x'.repeat(1000), deleted: normalDeleted })
 );
 check('普通成员被禁言一次', normalMember._calls.timeout, 1);
 check('禁言时长 = 7 天', normalMember._calls.timeoutMs, g.timeoutDays * 24 * 60 * 60 * 1000);
@@ -244,19 +244,19 @@ check('绝不调用 ban', normalMember._calls.ban, 0);
 check('触发的那条消息被删除', normalDeleted.length, 1);
 check('发出 2 条私信（报告 + 结果）', dmCount, 2);
 
-// 7-2 499 字符不触发
+// 7-2 999 字符不触发
 resetGuardState();
 dmCount = 0;
 const edgeMember = fakeMember();
-await handleGuardMessage(fakeMessage(edgeMember, { content: 'x'.repeat(499) }));
-check('499 字符不触发（边界）', edgeMember._calls.timeout, 0);
-check('499 字符不发私信', dmCount, 0);
+await handleGuardMessage(fakeMessage(edgeMember, { content: 'x'.repeat(999) }));
+check('999 字符不触发（边界）', edgeMember._calls.timeout, 0);
+check('999 字符不发私信', dmCount, 0);
 
 // 7-3 管理员完全跳过
 resetGuardState();
 dmCount = 0;
 const adminMember = fakeMember({ admin: true });
-await handleGuardMessage(fakeMessage(adminMember, { content: 'x'.repeat(2000) }));
+await handleGuardMessage(fakeMessage(adminMember, { content: 'x'.repeat(3000) }));
 check('管理员不被禁言', adminMember._calls.timeout, 0);
 check('管理员不发私信', dmCount, 0);
 
@@ -266,7 +266,7 @@ dmCount = 0;
 const premiumMember = fakeMember({ roles: ['1402583341059932200'] });
 const premiumDeleted = [];
 await handleGuardMessage(
-  fakeMessage(premiumMember, { content: 'x'.repeat(500), deleted: premiumDeleted })
+  fakeMessage(premiumMember, { content: 'x'.repeat(1000), deleted: premiumDeleted })
 );
 check('premium 角色同样被禁言', premiumMember._calls.timeout, 1);
 check('premium 角色也不被封禁', premiumMember._calls.ban, 0);
@@ -278,7 +278,7 @@ resetGuardState();
 dmCount = 0;
 const otherChannelMember = fakeMember();
 await handleGuardMessage(
-  fakeMessage(otherChannelMember, { content: 'x'.repeat(900), channelId: '999999999' })
+  fakeMessage(otherChannelMember, { content: 'x'.repeat(3000), channelId: '999999999' })
 );
 check('非监控频道不处置', otherChannelMember._calls.timeout, 0);
 
@@ -287,36 +287,36 @@ resetGuardState();
 dmCount = 0;
 const rejectMember = fakeMember({ timeoutRejects: true });
 for (let i = 0; i < 8; i += 1) {
-  await handleGuardMessage(fakeMessage(rejectMember, { content: 'x'.repeat(500) }));
+  await handleGuardMessage(fakeMessage(rejectMember, { content: 'x'.repeat(1000) }));
 }
 check('禁言失败只尝试一次（冷却生效）', rejectMember._calls.timeout, 1);
 check('禁言失败仍发 2 条私信（报告 + 失败说明）', dmCount, 2);
 
-// 7-7 刷屏：3 条各 340 字符（合计 1020）→ 第 3 条触发，三条一起删
+// 7-7 刷屏：3 条各 500 字符（合计 1500）→ 第 3 条触发，三条一起删
 resetGuardState();
 dmCount = 0;
 const floodMember = fakeMember({ id: '300' });
 const floodDeleted = [];
 for (let i = 0; i < 2; i += 1) {
   await handleGuardMessage(
-    fakeMessage(floodMember, { content: 'x'.repeat(340), deleted: floodDeleted })
+    fakeMessage(floodMember, { content: 'x'.repeat(500), deleted: floodDeleted })
   );
 }
-check('前 2 条合计 680 不触发（条数未超）', floodMember._calls.timeout, 0);
+check('前 2 条合计 1000 不触发（条数未超）', floodMember._calls.timeout, 0);
 await handleGuardMessage(
-  fakeMessage(floodMember, { content: 'x'.repeat(340), deleted: floodDeleted })
+  fakeMessage(floodMember, { content: 'x'.repeat(500), deleted: floodDeleted })
 );
-check('第 3 条累计 1020 字符触发禁言', floodMember._calls.timeout, 1);
+check('第 3 条累计 1500 字符触发禁言', floodMember._calls.timeout, 1);
 check('本批 3 条消息全部删除', floodDeleted.length, 3);
 check('刷屏触发同样发 2 条私信', dmCount, 2);
 
-// 7-8 2 条各 490 字符（合计 980）→ 不触发
+// 7-8 2 条各 740 字符（合计 1480）→ 不触发
 resetGuardState();
 dmCount = 0;
 const twoOnly = fakeMember({ id: '400' });
-await handleGuardMessage(fakeMessage(twoOnly, { content: 'x'.repeat(490) }));
-await handleGuardMessage(fakeMessage(twoOnly, { content: 'x'.repeat(490) }));
-check('只有 2 条时即使合计 980 也不触发', twoOnly._calls.timeout, 0);
+await handleGuardMessage(fakeMessage(twoOnly, { content: 'x'.repeat(740) }));
+await handleGuardMessage(fakeMessage(twoOnly, { content: 'x'.repeat(740) }));
+check('只有 2 条时即使合计 1480 也不触发', twoOnly._calls.timeout, 0);
 
 /* ---------- 汇总 ---------- */
 console.log(`\n===== 结果：${passed} 通过，${failed} 失败 =====\n`);
