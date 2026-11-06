@@ -50,7 +50,6 @@ const GUARD_DEFAULT_CHANNEL_IDS = [
   '1518061898208251955',
   '1518473408961183836',
 ];
-const GUARD_DEFAULT_PREMIUM_ROLE_IDS = ['1402583341059932200'];
 const GUARD_DEFAULT_REPORT_USER_IDS = ['1362424024243634176'];
 
 export const config = {
@@ -100,23 +99,19 @@ export const config = {
     enabled: !/^(off|false|0|no|disabled)$/i.test(opt('GUARD_ENABLED', 'on')),
     // 要监控的频道（默认上面那 5 个）
     channelIds: listOr('GUARD_CHANNEL_IDS', GUARD_DEFAULT_CHANNEL_IDS),
-    // 规则 1：单条超过多少字符
-    maxChars: int('GUARD_MAX_CHARS', 400),
+    // 规则 1：单条达到多少字符就触发（含等于，即 >=）
+    maxChars: int('GUARD_MAX_CHARS', 500),
     // 规则 2：窗口长度（分钟）
     windowMinutes: int('GUARD_WINDOW_MINUTES', 5),
     // 规则 2：窗口内消息条数上限（超过才可能触发，即 >2 条）
     maxMessages: int('GUARD_MAX_MESSAGES', 2),
-    // 规则 2：窗口内合计字符上限（超过才可能触发，即 >500 字符）
-    windowChars: int('GUARD_WINDOW_CHARS', 500),
+    // 规则 2：窗口内合计字符上限（达到才触发，即 >=1000）
+    windowChars: int('GUARD_WINDOW_CHARS', 1000),
     // 额外豁免的管理员角色（Administrator 权限与服务器所有者本身已自动豁免）
     adminRoleIds: list('GUARD_ADMIN_ROLE_IDS'),
-    // premium 角色：只删消息 + 禁言，不封禁
-    premiumRoleIds: listOr('GUARD_PREMIUM_ROLE_IDS', GUARD_DEFAULT_PREMIUM_ROLE_IDS),
     // 接收报告私信的用户（默认 Juliet）
     reportUserIds: listOr('GUARD_REPORT_USER_IDS', GUARD_DEFAULT_REPORT_USER_IDS),
-    // 封禁时连带删除最近多少秒的消息（Discord 上限 604800 = 7 天）
-    banDeleteSeconds: int('GUARD_BAN_DELETE_SECONDS', 86400),
-    // premium 成员的禁言天数
+    // premium 成员的禁言天数（当前所有人一律禁言，不再区分身份）
     timeoutDays: int('GUARD_TIMEOUT_DAYS', 7),
     // 处置失败后的冷却时间（分钟），避免同一个人反复触发刷爆报告人私信
     cooldownMinutes: int('GUARD_COOLDOWN_MINUTES', 10),
@@ -150,8 +145,8 @@ export function printConfigSummary() {
   console.log(
     `反刷屏守卫    : ${
       config.guard.enabled
-        ? `开 · 频道 ${config.guard.channelIds.join(', ')} · 阈值 >${config.guard.maxChars} 字符 / ` +
-          `${config.guard.windowMinutes} 分钟内 >${config.guard.maxMessages} 条且 >${config.guard.windowChars} 字符`
+        ? `开 · 频道 ${config.guard.channelIds.join(', ')} · 阈值 >=${config.guard.maxChars} 字符 / ` +
+          `${config.guard.windowMinutes} 分钟内 >${config.guard.maxMessages} 条且 >=${config.guard.windowChars} 字符`
         : '关（GUARD_ENABLED=off）'
     }`
   );

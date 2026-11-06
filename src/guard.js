@@ -1,15 +1,15 @@
 /**
- * 反刷屏守卫：监控指定频道，命中规则后记录证据、私信报告人、执行封禁 / 禁言。
+ * 反刷屏守卫：监控指定频道，命中规则后记录证据、私信报告人、执行禁言 + 删除本批消息。
  *
  * 触发规则（任一命中即触发）：
- *   1. 单条消息字符数 > guard.maxChars（默认 400）
+ *   1. 单条消息字符数 >= guard.maxChars（默认 500）
  *   2. 窗口期（默认 5 分钟）内消息数 > guard.maxMessages（默认 2）
- *      且这些消息合计字符数 > guard.windowChars（默认 500）
+ *      且这些消息合计字符数 >= guard.windowChars（默认 1000）
  *
- * 处置方式：
+ * 处置方式（所有人一致，不再区分身份）：
  *   - 服务器所有者 / 拥有 Administrator 权限 / 拥有配置的管理员角色 → 完全跳过
- *   - 拥有 premium 角色 → 删除本批消息 + 禁言（默认 7 天），不封禁
- *   - 其他成员 → 先私信报告，再封禁（默认连带删除 24 小时消息），最后私信封禁结果
+ *   - 其他人 → 删除触发条件的那批消息 + 禁言（默认 7 天），不封禁
+ *   - 先私信报告（含消息原文），再处置，最后私信处置结果
  *
  * 设计取舍：
  *   - 窗口、占用、冷却全部放在内存里，重启即清空。这只会「漏判」，不会「误判」。
@@ -72,25 +72,16 @@ export function isExemptMember(member, guild) {
   return false;
 }
 
-/** 是否持有 premium 角色 */
-export function isPremiumMember(member) {
-  if (!member) return false;
-  for (const roleId of g.premiumRoleIds) {
-    if (member.roles?.cache?.has(roleId)) return true;
-  }
-  return false;
-}
-
 /**
  * 判定是否触发。`entries` 按时间正序，最后一条是刚收到的消息。
- * 返回 null 表示未触发。
+ * 返回 null 表示未触发。两条规则是「任一命中」，阈值均为「含等于」。
  */
 export function detectTrigger(entries, now = Date.now()) {
   if (!entries || entries.length === 0) return null;
 
-  // 规则 1：单条超长
+  // 规则 1：单条达到上限（含等于，500 就算命中）
   const last = entries[entries.length - 1];
-  if (last.chars > g.maxChars) {
+  if (last.chars >= g.maxChars) {
     return {
       kind: 'length',
       entries: [last],
@@ -99,10 +90,10 @@ export function detectTrigger(entries, now = Date.now()) {
     };
   }
 
-  // 规则 2：窗口内条数与合计字符同时超限
+  // 规则 2：窗口内条数超限 且 合计字符数达到上限（含等于）
   const recent = entries.filter((e) => now - e.at <= WINDOW_MS);
   const totalChars = recent.reduce((sum, e) => sum + e.chars, 0);
-  if (recent.length > g.maxMessages && totalChars > g.windowChars) {
+  if (recent.length > g.maxMessages && totalChars >= g.windowChars) {
     return {
       kind: 'flood',
       entries: recent,
@@ -163,8 +154,8 @@ export function buildTriggerReport({ member, trigger, channelNames }) {
   const hidden = trigger.entries.length - shown.length;
   const rule =
     trigger.kind === 'length'
-      ? `single message over ${g.maxChars} chars (${trigger.totalChars} chars)`
-      : `more than ${g.maxMessages} messages totalling over ${g.windowChars} chars within ${g.windowMinutes} min`;
+      ? `single message of at least ${g.maxChars} chars (${trigger.totalChars} chars)`
+      : `more than ${g.maxMessages} messages totalling at least ${g.windowChars} chars within ${g.windowMinutes} min`;
 
   const lines = [];
   lines.push('🛡️ **Spam guard triggered**');
@@ -219,55 +210,35 @@ async function deleteEntries(entries) {
   return { deleted, failed };
 }
 
-/** premium 成员：删消息 + 禁言，不封禁 */
-async function enforcePremium(member, trigger, channelNames) {
+/** 命中后的统一处置：先发证据报告，再删本批消息 + 禁言，最后发结果报告 */
+async function enforceTimeout(client, member, trigger, channelNames) {
+  // 先发报告：即使后面的处置失败，证据也已经送到报告人手上
+  await sendReport(client, buildTriggerReport({ member, trigger, channelNames }));
+
   const { deleted, failed } = await deleteEntries(trigger.entries);
-
-  let timeoutNote;
-  try {
-    await member.timeout(TIMEOUT_MS, `spam guard: ${trigger.kind}`);
-    timeoutNote = `applied ${g.timeoutDays} day timeout`;
-  } catch (e) {
-    timeoutNote = `⚠️ timeout FAILED: ${e.message} — needs manual action`;
-    console.error(`[守卫] 对 ${member.user.tag} 执行禁言失败：${e.message}`);
-  }
-
-  return [
-    '⏳ **Premium member — not banned**',
-    `Member: ${member.user.username} (${member.displayName || member.user.username}) · ID \`${member.id}\``,
-    `Channel: ${channelNames.join(', ')}`,
-    `Messages deleted: ${deleted} succeeded, ${failed} failed`,
-    `Timeout: ${timeoutNote}`,
-  ].join('\n');
-}
-
-/** 普通成员：先报告，再封禁，最后报告结果 */
-async function enforceBan(client, member, trigger, channelNames) {
-  const report = buildTriggerReport({ member, trigger, channelNames });
-  await sendReport(client, report);
 
   let resultText;
   try {
-    await member.ban({
-      deleteMessageSeconds: g.banDeleteSeconds,
-      reason: `spam guard: ${trigger.kind}`,
-    });
-    const hours = Math.round(g.banDeleteSeconds / 3600);
+    await member.timeout(TIMEOUT_MS, `spam guard: ${trigger.kind}`);
     resultText = [
-      '🔨 **Ban result — SUCCESS**',
+      '⏳ **Timeout applied — SUCCESS**',
       `Member: ${member.user.username} (${member.displayName || member.user.username}) · ID \`${member.id}\``,
       `Reason: spam guard (${trigger.kind})`,
-      `Also removed the last ${hours} hour(s) of their messages`,
+      `Duration: ${g.timeoutDays} day(s)`,
+      `Messages deleted: ${deleted} succeeded, ${failed} failed`,
     ].join('\n');
-    console.log(`[守卫] 已封禁 ${member.user.tag}（${member.id}），原因：${trigger.kind}`);
+    console.log(
+      `[守卫] 已禁言 ${member.user.tag}（${member.id}）${g.timeoutDays} 天，原因：${trigger.kind}`
+    );
   } catch (e) {
     resultText = [
-      '🔨 **Ban result — ❌ FAILED (manual action needed)**',
+      '⏳ **Timeout — ❌ FAILED (manual action needed)**',
       `Member: ${member.user.username} (${member.displayName || member.user.username}) · ID \`${member.id}\``,
       `Error: ${e.message}`,
-      'The bot could not ban this member. Please check its role position and the "Ban Members" permission.',
+      `Messages deleted: ${deleted} succeeded, ${failed} failed`,
+      'The bot could not time this member out. Please check its role position and the "Moderate Members" permission.',
     ].join('\n');
-    console.error(`[守卫] 封禁 ${member.user.tag} 失败：${e.message}`);
+    console.error(`[守卫] 禁言 ${member.user.tag} 失败：${e.message}`);
   }
 
   await sendReport(client, resultText);
@@ -327,13 +298,8 @@ export async function handleGuardMessage(msg) {
   );
 
   try {
-    if (isPremiumMember(member)) {
-      const text = await enforcePremium(member, trigger, channelNames);
-      console.log(`[守卫] premium 处置完成：${member.user.tag}（${member.id}）`);
-      await sendReport(msg.client, text);
-    } else {
-      await enforceBan(msg.client, member, trigger, channelNames);
-    }
+    // 所有人一律走同一条处置：删本批消息 + 禁言，不再区分 premium / 普通成员
+    await enforceTimeout(msg.client, member, trigger, channelNames);
     cooldownUntil.set(member.id, Date.now() + g.cooldownMinutes * 60 * 1000);
   } catch (e) {
     // 处置本身出错也要进冷却，否则会不断重试、把报告人刷爆
