@@ -29,6 +29,13 @@ import {
 import { summarizeMessages, pingAI } from './summarize.js';
 import { buildTranscript, countByAuthor, formatDateTime, humanDuration, splitMessage } from './format.js';
 import { handleGuardMessage } from './guard.js';
+import {
+  buildPurgeMediaCommand,
+  collectMediaMessages,
+  deleteMediaMessages,
+  summarize,
+  formatBytes,
+} from './purge.js';
 
 /* ============================================================
    Discord 客户端
@@ -145,10 +152,11 @@ async function registerCommandsForGuild(guildId) {
         buildLookupCommand().toJSON(),
         buildSearchCommand().toJSON(),
         buildRecentCommand().toJSON(),
+        buildPurgeMediaCommand().toJSON(),
       ],
     });
     console.log(
-      `[命令注册] 已注册到服务器 ${guildId}：/${config.checkCommandName}, /status, /lookup, /search, /recent`
+      `[命令注册] 已注册到服务器 ${guildId}：/${config.checkCommandName}, /status, /lookup, /search, /recent, /purge-media`
     );
   } catch (e) {
     console.error(`[命令注册] 服务器 ${guildId} 失败：${e.message}`);
@@ -299,6 +307,11 @@ function buildStatusCommand() {
   else c.setDescription('查看机器人运行状态（在线时长、消息数、最近错误、AI 配置）');
   return c;
 }
+
+/**
+ * /purge-media —— 清除某成员在某频道发的所有图片 / 视频。
+ * 命令定义在 src/purge.js（与判定逻辑放一起，便于离线自检）。
+ */
 
 function buildLookupCommand() {
   const c = new SlashCommandBuilder()
@@ -719,12 +732,140 @@ client.on(Events.MessageCreate, (msg) => {
   });
 });
 
+/* ============================================================
+   /purge-media：清除单个成员在某频道发布的全部图片 / 视频
+   安全策略：默认只统计（dry run），必须 confirm:true 才真删。
+   受限用户保护：沿用 guardAndDefer 的 ALLOWED_USER_IDS 校验。
+   ============================================================ */
+async function handlePurgeMedia(interaction) {
+  if (!(await guardAndDefer(interaction))) return;
+
+  const rawUser = (interaction.options.getString('user', true) || '').trim();
+  if (!/^\d{15,21}$/.test(rawUser)) {
+    await interaction.editReply({
+      content: '❌ Invalid user ID. Expected a 15–21 digit Discord user ID.',
+    });
+    return;
+  }
+
+  const targetChannel = interaction.options.getChannel('channel');
+  const confirm = interaction.options.getBoolean('confirm') ?? false;
+  const keepPinned = interaction.options.getBoolean('keep_pinned') ?? false;
+  const channelId = targetChannel?.id ?? interaction.channelId;
+
+  let channel;
+  try {
+    channel = await client.channels.fetch(channelId);
+  } catch (e) {
+    await interaction.editReply({
+      content: `❌ Cannot access channel \`${channelId}\`: ${e.message}`,
+    });
+    return;
+  }
+  if (!channel?.messages) {
+    await interaction.editReply({
+      content: `❌ Channel \`${channelId}\` is not a text channel I can read.`,
+    });
+    return;
+  }
+
+  try {
+    const perms = channel.permissionsFor(channel.guild?.members?.me);
+    if (!perms?.has('ReadMessageHistory') || !perms?.has('ManageMessages')) {
+      await interaction.editReply({
+        content:
+          '❌ I need **Read Message History** and **Manage Messages** in that channel. Check my role position and channel permissions.',
+      });
+      return;
+    }
+  } catch {
+    /* 拿不到权限信息就继续，让 Discord 在调用时自己报错 */
+  }
+
+  await interaction.editReply({
+    content: `🔍 Scanning #${channel.name} for media posted by <@${rawUser}>…`,
+  });
+
+  let lastScanUpdate = 0;
+  const { hits, scanned, pages } = await collectMediaMessages(channel, rawUser, {
+    keepPinned,
+    onProgress: ({ scanned: read, hits: found }) => {
+      const now = Date.now();
+      if (now - lastScanUpdate < 4000) return;
+      lastScanUpdate = now;
+      interaction
+        .editReply({
+          content: `🔍 Scanning #${channel.name}… read ${read} messages, found ${found} matching`,
+        })
+        .catch(() => {});
+    },
+  });
+
+  if (hits.length === 0) {
+    await interaction.editReply({
+      content: `✅ Nothing to delete. Read ${scanned} messages (${pages} pages) in #${channel.name}; no image or video posted by <@${rawUser}>.`,
+    });
+    return;
+  }
+
+  const stat = summarize(hits);
+  const fmt = (d) => (d ? d.toISOString().slice(0, 16).replace('T', ' ') : '-');
+  const lines = [
+    confirm ? '🗑️ **Deleting**' : '📋 **Dry run — nothing has been deleted**',
+    `Channel: #${channel.name}`,
+    `Member: <@${rawUser}> (\`${rawUser}\`)`,
+    `Matching messages: **${stat.messages}** (images ${stat.images}, videos ${stat.videos}, ~${formatBytes(stat.bytes)})`,
+    `Scanned: ${scanned} messages / ${pages} pages`,
+    `Range (UTC): ${fmt(stat.earliest)} → ${fmt(stat.latest)}`,
+  ];
+  if (stat.threads > 0) {
+    lines.push(
+      `⚠️ ${stat.threads} of them are thread starters — deleting those will remove the threads too.`
+    );
+  }
+  lines.push('', 'First matches:');
+  for (const hit of hits.slice(0, 5)) {
+    const icons = hit.media.map((m) => (m.kind === 'image' ? '🖼️' : '🎬')).join('');
+    const names = hit.media.map((m) => m.name).join(', ').slice(0, 50);
+    lines.push(`• ${hit.createdAt.toISOString().slice(0, 10)} \`${hit.id}\` ${icons} ${names}`);
+  }
+  if (hits.length > 5) lines.push(`… and ${hits.length - 5} more`);
+  if (!confirm) {
+    lines.push('', 'Run again with `confirm: true` to delete them. **This cannot be undone.**');
+  }
+
+  await interaction.editReply({ content: lines.join('\n').slice(0, 1990) });
+  if (!confirm) return;
+
+  let lastDeleteUpdate = 0;
+  const { deleted, failures } = await deleteMediaMessages(channel, hits, {
+    onProgress: ({ deleted: done, total }) => {
+      const now = Date.now();
+      if (now - lastDeleteUpdate < 4000) return;
+      lastDeleteUpdate = now;
+      interaction.editReply({ content: `🗑️ Deleting… ${done}/${total}` }).catch(() => {});
+    },
+  });
+
+  console.log(
+    `[清理] 频道 ${channel.name}(${channel.id}) 成员 ${rawUser}：删除 ${deleted}/${hits.length}，失败 ${failures.length}`
+  );
+
+  const out = [
+    `✅ **Done** — deleted ${deleted} of ${hits.length} messages in #${channel.name}.`,
+    failures.length ? `❌ Failed: ${failures.length}` : 'No failures.',
+  ];
+  for (const f of failures.slice(0, 5)) out.push(`• \`${f.id}\`: ${f.error}`);
+  await interaction.editReply({ content: out.join('\n').slice(0, 1990) });
+}
+
 const COMMAND_HANDLERS = {
   [config.checkCommandName]: handleCheck,
   status: handleStatus,
   lookup: handleLookup,
   search: handleSearch,
   recent: handleRecent,
+  'purge-media': handlePurgeMedia,
 };
 
 client.on(Events.InteractionCreate, async (interaction) => {
