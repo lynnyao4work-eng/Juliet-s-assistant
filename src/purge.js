@@ -197,26 +197,39 @@ export async function deleteMediaMessages(channel, hits, opts = {}) {
   // 14 天内的：走批量删除，一次 100 条
   for (let i = 0; i < recent.length; i += 100) {
     const chunk = recent.slice(i, i + 100);
+    let remaining = chunk;
+
     try {
       const result = await channel.bulkDelete(
         chunk.map((h) => h.id),
         true
       );
-      deleted += result?.size ?? chunk.length;
+      const doneIds = new Set(
+        result && typeof result.keys === 'function'
+          ? [...result.keys()]
+          : toArray(result).map((m) => m.id)
+      );
+      deleted += result ? doneIds.size : chunk.length;
+      // Discord 的批量删除会**静默跳过**置顶消息等不能批量处理的项，
+      // 返回结果里没有的，逐条补删 —— 保证「一条不剩」而不是「删了一部分就报成功」。
+      remaining = result ? chunk.filter((h) => !doneIds.has(h.id)) : [];
     } catch (e) {
       // 批量失败就退回逐条，避免整批卡住
-      for (const hit of chunk) {
-        try {
-          const msg = await channel.messages.fetch(hit.id);
-          await msg.delete();
-          deleted += 1;
-        } catch (err) {
-          if (gone.test(err.message)) deleted += 1;
-          else failures.push({ id: hit.id, error: err.message });
-        }
-        await sleep(350);
-      }
+      remaining = chunk;
     }
+
+    for (const hit of remaining) {
+      try {
+        const msg = await channel.messages.fetch(hit.id);
+        await msg.delete();
+        deleted += 1;
+      } catch (err) {
+        if (gone.test(err.message)) deleted += 1;
+        else failures.push({ id: hit.id, error: err.message });
+      }
+      await sleep(350);
+    }
+
     if (onProgress) onProgress({ deleted, total: hits.length });
     await sleep(500);
   }

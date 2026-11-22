@@ -109,7 +109,7 @@ console.log('\n【3/5】分页扫描与过滤');
  *   fetch({ limit, before }) → 一页消息
  *   fetch(id)                → 单条消息
  */
-function fakeChannel(messages, { bulkFails = false } = {}) {
+function fakeChannel(messages, { bulkFails = false, bulkSkipsPinned = false } = {}) {
   const store = [...messages].sort((a, b) => Number(b.id) - Number(a.id));
   const calls = { bulk: [], single: [], pages: 0 };
 
@@ -134,11 +134,17 @@ function fakeChannel(messages, { bulkFails = false } = {}) {
     async bulkDelete(ids) {
       if (bulkFails) throw new Error('Invalid Form Body');
       calls.bulk.push(ids);
+      const done = new Map();
       for (const id of ids) {
         const found = store.find((m) => m.id === id);
-        if (found) found.deleted = true;
+        if (!found) continue;
+        // 真实 Discord：置顶消息不会被打包删除，而是静默跳过
+        if (bulkSkipsPinned && found.pinned) continue;
+        found.deleted = true;
+        done.set(id, found);
       }
-      return { size: ids.length };
+      // 返回 Collection（有 keys()），和 discord.js 一致
+      return done;
     },
   };
   channel._calls = calls;
@@ -176,6 +182,14 @@ const pinnedCh = fakeChannel([
 const kept = await collectMediaMessages(pinnedCh, TARGET, { keepPinned: true });
 check('keepPinned 时置顶消息被跳过', kept.hits.map((h) => h.id), ['2']);
 
+// 扫描不设时间上限：2 年前的媒体同样要翻出来
+const ancientCh = fakeChannel([
+  msg(1, { attachments: [img()], at: NOW - 730 * DAY }),
+  msg(2, { attachments: [img()], at: NOW - DAY }),
+]);
+const ancient = await collectMediaMessages(ancientCh, TARGET, {});
+check('扫描能翻到 2 年前的媒体（无时间上限）', ancient.hits.map((h) => h.id), ['2', '1']);
+
 /* ---------- 4. 删除策略 ---------- */
 console.log('\n【4/5】删除策略（14 天内批量 / 更早逐条）');
 
@@ -208,6 +222,35 @@ const gone = await deleteMediaMessages(goneChannel, [
 ]);
 check('Unknown Message 视为已删除', gone.deleted, 1);
 check('Unknown Message 不记为失败', gone.failures.length, 0);
+
+// 置顶消息：Discord 批量删除会静默跳过 → 必须逐条补删，否则会「报成功但没删干净」
+const pinCh = fakeChannel(
+  [msg(4001, { attachments: [img()], pinned: true }), msg(4002, { attachments: [img()] })],
+  { bulkSkipsPinned: true }
+);
+const pinRes = await deleteMediaMessages(pinCh, [
+  { id: '4001', createdAt: new Date(NOW - DAY), media: [{ kind: 'image', size: 1 }] },
+  { id: '4002', createdAt: new Date(NOW - DAY), media: [{ kind: 'image', size: 1 }] },
+]);
+check('批量跳过置顶时，补删把置顶也删掉', pinCh._store.every((m) => m.deleted), true);
+check('补删后总数仍为 2（不重复计数）', pinRes.deleted, 2);
+check('补删无失败', pinRes.failures.length, 0);
+
+// 时间跨度：不存在任何「只删多少天以前」的筛选 —— 从 1 天前到 2 年前全部删除
+const AGES = [1, 3, 7, 10, 30, 400, 730];
+const ageCh = fakeChannel(
+  AGES.map((d, i) => msg(5000 + i, { attachments: [img()], at: NOW - d * DAY }))
+);
+const ageRes = await deleteMediaMessages(
+  ageCh,
+  AGES.map((d, i) => ({
+    id: String(5000 + i),
+    createdAt: new Date(NOW - d * DAY),
+    media: [{ kind: 'image', size: 1 }],
+  }))
+);
+check('1 / 3 / 7 / 10 / 30 / 400 / 730 天前的媒体全部删除', ageCh._store.every((m) => m.deleted), true);
+check('删除总数 = 7（没有任何时间门槛）', ageRes.deleted, 7);
 
 /* ---------- 5. 命令定义 ---------- */
 console.log('\n【5/5】命令定义（离线校验 slash 命令结构）');
